@@ -20,6 +20,7 @@ import numpy as np
 from ..agent.agent import Agent, AgentResult
 from ..llm import LLM, parse_json_object
 from .questions import Question, norm
+from .trajectory import score_trajectory
 
 
 def set_f1(pred: Sequence[str], gold: Sequence[str]) -> float:
@@ -45,13 +46,25 @@ class Row:
     seconds: float
     prompt_tokens: int
     completion_tokens: int
+    route: str = "agent"
+    llm_calls: int = 0
+    precision: float = 0.0
+    efficiency: float = 0.0
+    order_ok: bool = False
+    error_steps: int = 0
+    agentic: bool = True
 
 
 def score(q: Question, res: AgentResult) -> Row:
     f1 = set_f1(res.items, q.answer)
     used = {s.tool for s in res.steps if s.tool}
+    tj = score_trajectory(q, res)
+    agentic = getattr(res, "route", "agent") in ("agent", "planner")
+    if not agentic:                                   # cache / handler / refusal: no tool trajectory exists, the capability was used by design
+        used = set(q.expected_tools)
     return Row(q.qid, q.qtype, f1, f1 == 1.0, bool(used & q.expected_tools), len(res.steps), res.finished, res.seconds,
-               res.usage.get("prompt_tokens", 0), res.usage.get("completion_tokens", 0))
+               res.usage.get("prompt_tokens", 0), res.usage.get("completion_tokens", 0), getattr(res, "route", "agent"),
+               res.usage.get("llm_calls", 0), tj.precision, tj.efficiency, tj.order_ok, tj.error_steps, agentic)
 
 
 def run_agent_eval(agent: Agent, questions: Sequence[Question], log: Callable[[str], None] = print) -> Dict:
@@ -71,11 +84,23 @@ def run_agent_eval(agent: Agent, questions: Sequence[Question], log: Callable[[s
         groups[r.qtype].append(r)
     for t, rs in sorted(groups.items()):
         by_type[t] = {"n": len(rs), "exact": float(np.mean([r.exact for r in rs])), "f1": float(np.mean([r.f1 for r in rs])),
-                      "tool_ok": float(np.mean([r.tool_ok for r in rs])), "mean_steps": float(np.mean([r.steps for r in rs]))}
+                      "tool_ok": float(np.mean([r.tool_ok for r in rs])), "mean_steps": float(np.mean([r.steps for r in rs])),
+                      "efficiency": float(np.mean([r.efficiency for r in rs])), "order_ok": float(np.mean([r.order_ok for r in rs]))}
+    agentic_rows = [r for r in rows if r.agentic]
     overall = {"n": len(rows), "exact": float(np.mean([r.exact for r in rows])), "f1": float(np.mean([r.f1 for r in rows])),
                "tool_ok": float(np.mean([r.tool_ok for r in rows])), "finished": float(np.mean([r.finished for r in rows])),
                "mean_steps": float(np.mean([r.steps for r in rows])), "mean_seconds": float(np.mean([r.seconds for r in rows])),
-               "prompt_tokens": int(sum(r.prompt_tokens for r in rows)), "completion_tokens": int(sum(r.completion_tokens for r in rows))}
+               "prompt_tokens": int(sum(r.prompt_tokens for r in rows)), "completion_tokens": int(sum(r.completion_tokens for r in rows)),
+               "p50_seconds": float(np.percentile([r.seconds for r in rows], 50)), "p95_seconds": float(np.percentile([r.seconds for r in rows], 95)),
+               "tokens_per_question": float(sum(r.prompt_tokens + r.completion_tokens for r in rows) / len(rows)),
+               "llm_calls_per_question": float(np.mean([r.llm_calls for r in rows])),
+               "handled_without_llm": float(np.mean([r.llm_calls == 0 for r in rows])),
+               "n_agentic": len(agentic_rows),
+               "trajectory_precision": float(np.mean([r.precision for r in agentic_rows])) if agentic_rows else 0.0,
+               "efficiency": float(np.mean([r.efficiency for r in agentic_rows])) if agentic_rows else 0.0,
+               "order_ok": float(np.mean([r.order_ok for r in agentic_rows])) if agentic_rows else 0.0,
+               "error_steps_per_question": float(np.mean([r.error_steps for r in agentic_rows])) if agentic_rows else 0.0,
+               "routes": {k: int(sum(r.route == k for r in rows)) for k in sorted({r.route for r in rows})}}
     return {"overall": overall, "by_type": by_type, "rows": [asdict(r) for r in rows]}
 
 

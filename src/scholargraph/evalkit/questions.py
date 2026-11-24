@@ -32,6 +32,28 @@ EXPECTED_TOOLS = {
 }
 MAX_ANSWER_SET = 10
 
+# The shortest sensible sequence of tool calls for each question type (used to score the *trajectory*, not just the final answer).
+OPTIMAL_TOOLS = {
+    "author_of": ["search_papers", "get_authors"], "cites_count": ["search_papers", "get_citations"],
+    "references_of": ["search_papers", "get_references"], "co_cited": ["search_papers", "search_papers", "co_cited"],
+    "concept_year": ["papers_with_concept"], "top_cited_year": ["top_cited"], "coauthor": ["find_author", "coauthors"],
+}
+
+
+def save_questions(questions, path) -> None:
+    """Freeze a question set (a *golden set*) so that later runs and later models are compared on exactly the same questions."""
+    import json
+    from dataclasses import asdict
+    from pathlib import Path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps([asdict(q) for q in questions], indent=1), encoding="utf-8")
+
+
+def load_questions(path):
+    import json
+    from pathlib import Path
+    return [Question(**d) for d in json.loads(Path(path).read_text(encoding="utf-8"))]
+
 
 @dataclass
 class Question:
