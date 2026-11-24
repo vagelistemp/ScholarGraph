@@ -37,6 +37,7 @@ class HybridRetriever:
     def __init__(self, paper_ids: List[str], texts: Sequence[str], embeddings: Optional[np.ndarray] = None, encoder=None,
                  years: Optional[np.ndarray] = None, store: Optional[GraphStore] = None):
         self.ids, self.idx = list(paper_ids), {p: i for i, p in enumerate(paper_ids)}
+        self.texts = list(texts)
         self.bm25 = BM25().fit(texts)
         self.emb, self.encoder, self.years, self.store = embeddings, encoder, years, store
 
@@ -47,7 +48,7 @@ class HybridRetriever:
         return self.emb @ q
 
     def search(self, query: str, k: int = 5, pool: int = 50, year_from: Optional[int] = None, use_dense: bool = True,
-               use_bm25: bool = True, graph_weight: float = 0.0) -> List[Hit]:
+               use_bm25: bool = True, graph_weight: float = 0.0, reranker=None, rerank_pool: int = 30, rerank_blend: float = 0.0) -> List[Hit]:
         allowed = None if (year_from is None or self.years is None) else (self.years >= year_from)
         lists, labels = [], []
         if use_bm25:
@@ -80,5 +81,11 @@ class HybridRetriever:
                         graph_bonus[j] = graph_bonus.get(j, 0.0) + graph_weight * fused[h]
             for j, b in graph_bonus.items():
                 fused[j] = fused.get(j, 0.0) + b
-        ranked = sorted(fused, key=lambda i: (-fused[i], i))[:k]
+        ranked = sorted(fused, key=lambda i: (-fused[i], i))[:max(k, rerank_pool) if reranker is not None else k]
+        if reranker is not None and ranked:                      # second stage: re-score the best candidates with a stronger model
+            from .rerank import rerank_ids
+            order = rerank_ids(reranker, query, [self.ids[i] for i in ranked], [self.texts[i] for i in ranked], k, [fused[i] for i in ranked], rerank_blend)
+            rs = reranker.score(query, [self.texts[ranked[j]] for j in order])
+            return [Hit(self.ids[ranked[j]], float(rs[n]), {"rerank": float(rs[n]), "first_stage": fused[ranked[j]], "graph": graph_bonus.get(ranked[j], 0.0)})
+                    for n, j in enumerate(order)]
         return [Hit(self.ids[i], fused[i], {**{lab: parts[lab].get(i, 0.0) for lab in labels}, "graph": graph_bonus.get(i, 0.0)}) for i in ranked]
