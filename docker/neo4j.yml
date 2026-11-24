@@ -1,0 +1,16 @@
+# A local Neo4j server for Phase 2:   docker compose -f docker/neo4j.yml up -d
+# Browser UI: http://localhost:7474   (user neo4j, password scholargraph: change it for anything beyond local use)
+# Then:       python -m scholargraph neo4j-load
+# (This file has not been exercised against the project's loader yet; see the status table in the README.)
+services:
+  neo4j:
+    image: neo4j:5
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/scholargraph
+    volumes:
+      - neo4j_data:/data
+volumes:
+  neo4j_data:
