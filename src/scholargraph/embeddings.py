@@ -176,3 +176,21 @@ def embed_corpus(encoder, texts: Sequence[str], cache_path: Optional[Path] = Non
         np.save(cache_path, arr)
         cache_path.with_suffix(".fingerprint").write_text(fp, encoding="utf-8")
     return arr
+
+
+class BowHashEncoder:
+    """A dependency-free bag-of-words hashing encoder (numpy only): paraphrases sharing most words get a high cosine.
+
+    Not trained and not semantic, but deterministic, instant and good enough for memory, caches and tests where a real sentence encoder
+    is unnecessary or unavailable."""
+    name = "bow-hash"
+
+    def __init__(self, dim: int = 256):
+        self.dim = dim
+
+    def encode(self, texts: Sequence[str], batch_size: int = 0) -> np.ndarray:
+        out = np.zeros((len(texts), self.dim), dtype=np.float32)
+        for i, t in enumerate(texts):
+            for w in _tokens(t):
+                out[i, int.from_bytes(hashlib.md5(w.encode()).digest()[:4], "little") % self.dim] += 1.0
+        return l2_normalise(out)
