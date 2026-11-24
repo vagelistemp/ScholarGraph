@@ -30,7 +30,8 @@ class LLMResult:
 class LLM(Protocol):
     name: str
 
-    def chat(self, messages: Sequence[Message], temperature: float = 0.0, max_tokens: int = 512, json_mode: bool = False) -> LLMResult: ...
+    def chat(self, messages: Sequence[Message], temperature: float = 0.0, max_tokens: int = 512, json_mode: bool = False,
+             schema: Optional[dict] = None) -> LLMResult: ...
 
 
 @dataclass
@@ -54,8 +55,8 @@ class MeteredLLM:
     def __init__(self, inner: LLM):
         self.inner, self.usage, self.name = inner, Usage(), inner.name
 
-    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False) -> LLMResult:
-        r = self.inner.chat(messages, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode)
+    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False, schema=None) -> LLMResult:
+        r = self.inner.chat(messages, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode, schema=schema)
         self.usage.add(r)
         return r
 
@@ -66,10 +67,12 @@ class OllamaLLM:
     def __init__(self, model: str = "llama3.2:3b", host: str = "http://localhost:11434", timeout: float = 300.0):
         self.model, self.host, self.timeout, self.name = model, host.rstrip("/"), timeout, f"ollama:{model}"
 
-    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False) -> LLMResult:
+    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False, schema=None) -> LLMResult:
         body = {"model": self.model, "messages": list(messages), "stream": False,
                 "options": {"temperature": temperature, "num_predict": max_tokens}}
-        if json_mode:
+        if schema:
+            body["format"] = schema                      # Ollama structured outputs: the sampler is constrained to the JSON schema
+        elif json_mode:
             body["format"] = "json"
         t0 = time.time()
         r = httpx.post(f"{self.host}/api/chat", json=body, timeout=self.timeout)
@@ -84,9 +87,11 @@ class OpenAICompatibleLLM:
     def __init__(self, model: str, base_url: str = "https://api.openai.com/v1", api_key_env: str = "OPENAI_API_KEY", timeout: float = 120.0):
         self.model, self.base_url, self.api_key_env, self.timeout, self.name = model, base_url.rstrip("/"), api_key_env, timeout, f"openai-compat:{model}"
 
-    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False) -> LLMResult:
+    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False, schema=None) -> LLMResult:
         body = {"model": self.model, "messages": list(messages), "temperature": temperature, "max_tokens": max_tokens}
-        if json_mode:
+        if schema:
+            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema}}
+        elif json_mode:
             body["response_format"] = {"type": "json_object"}
         t0 = time.time()
         r = httpx.post(f"{self.base_url}/chat/completions", json=body, timeout=self.timeout,
@@ -103,7 +108,7 @@ class AnthropicLLM:
     def __init__(self, model: str = "claude-haiku-5-5", timeout: float = 120.0):
         self.model, self.timeout, self.name = model, timeout, f"anthropic:{model}"
 
-    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False) -> LLMResult:
+    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False, schema=None) -> LLMResult:
         system = "\n".join(m["content"] for m in messages if m["role"] == "system")
         turns = [m for m in messages if m["role"] != "system"]
         body = {"model": self.model, "max_tokens": max_tokens, "temperature": temperature, "messages": turns}
@@ -122,11 +127,12 @@ class FakeLLM:
     """A scripted model for tests: returns canned replies in order (or computes them from the messages with ``fn``)."""
 
     def __init__(self, replies: Optional[List[str]] = None, fn: Optional[Callable[[Sequence[Message]], str]] = None):
-        self.replies, self.fn, self.name, self.calls = list(replies or []), fn, "fake", []
+        self.replies, self.fn, self.name, self.calls, self.schemas = list(replies or []), fn, "fake", [], []
         self._i = 0
 
-    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False) -> LLMResult:
+    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False, schema=None) -> LLMResult:
         self.calls.append(list(messages))
+        self.schemas.append(schema)
         text = self.fn(messages) if self.fn else self.replies[min(self._i, len(self.replies) - 1)]
         self._i += 1
         return LLMResult(text, prompt_tokens=sum(len(m["content"].split()) for m in messages), completion_tokens=len(text.split()))

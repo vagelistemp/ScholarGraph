@@ -44,7 +44,7 @@ class ScriptedPolicyLLM:
     def _obs(messages: Sequence[Dict[str, str]]):
         return [json.loads(m["content"][len("OBSERVATION: "):]) for m in messages if m["role"] == "user" and m["content"].startswith("OBSERVATION: ")]
 
-    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False) -> LLMResult:
+    def chat(self, messages, temperature=0.0, max_tokens=512, json_mode=False, schema=None) -> LLMResult:
         q = next(m["content"] for m in messages if m["role"] == "user")[len("QUESTION: "):]
         obs = self._obs(messages)
         call = lambda tool, **args: json.dumps({"thought": "scripted", "tool": tool, "args": args})  # noqa: E731
