@@ -52,6 +52,9 @@ class GraphStore(ABC):
         """Authors whose name contains ``name`` (case-insensitive)."""
 
     @abstractmethod
+    def author_name(self, author_id: str) -> Optional[str]: ...
+
+    @abstractmethod
     def coauthors(self, author_id: str) -> List[Tuple[str, int]]:
         """(author_id, number of shared papers), most frequent first."""
 
@@ -136,6 +139,9 @@ class MemoryGraphStore(GraphStore):
         hit = self.authors[self._author_names_lower.str.contains(name.lower(), regex=False)]
         return [{"author_id": a, "name": r["name"], "n_papers": int(r["n_papers"])} for a, r in hit.sort_values("n_papers", ascending=False).iterrows()]
 
+    def author_name(self, author_id: str) -> Optional[str]:
+        return self.authors["name"].get(author_id)
+
     def coauthors(self, author_id: str) -> List[Tuple[str, int]]:
         cnt: Counter = Counter()
         for pid in self._papers_of.get(author_id, []):
@@ -195,6 +201,6 @@ class MemoryGraphStore(GraphStore):
         q = set(text.lower().split())
         if not q:
             return []
-        scores = np.array([len(q & t) / len(q) for t in self._title_tokens])
+        scores = np.array([len(q & t) / len(q | t) if t else 0.0 for t in self._title_tokens])       # Jaccard: an exact title scores 1.0
         order = np.argsort(-scores, kind="stable")[:k]
         return [self.ids[i] for i in order if scores[i] > 0]

@@ -77,6 +77,10 @@ class Neo4jGraphStore(GraphStore):
     def find_author(self, name: str) -> List[Dict[str, Any]]:
         return self._q("MATCH (a:Author) WHERE toLower(a.name) CONTAINS toLower($n) RETURN a.author_id AS author_id, a.name AS name, a.n_papers AS n_papers ORDER BY a.n_papers DESC", n=name)
 
+    def author_name(self, author_id: str) -> Optional[str]:
+        rows = self._q("MATCH (a:Author {author_id: $id}) RETURN a.name AS name", id=author_id)
+        return rows[0]["name"] if rows else None
+
     def coauthors(self, author_id: str) -> List[Tuple[str, int]]:
         rows = self._q("MATCH (a:Author {author_id: $id})-[:WROTE]->(p)<-[:WROTE]-(b:Author) WHERE b <> a RETURN b.author_id AS id, count(p) AS n ORDER BY n DESC, id", id=author_id)
         return [(r["id"], r["n"]) for r in rows]
