@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# data and models are never committed (they are rebuilt by the pipeline)
+data/
+models/
+runs/
+mlruns/
+*.parquet
+*.npy
+*.pt
+*.safetensors
+spark-warehouse/
+metastore_db/
+derby.log
+
+# personal study material (the lecture PDFs); publish only if you decide to
+learning/
+
+.env

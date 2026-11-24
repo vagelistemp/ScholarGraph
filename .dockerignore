@@ -1,0 +1,6 @@
+data/
+learning/
+.git/
+__pycache__/
+*.pyc
+models/

@@ -1,0 +1,15 @@
+# Linux image for the Spark / Delta Lake parts (Phase 1). Spark needs Java and, on native Windows, the Hadoop "winutils" helper;
+# inside this image none of that is a problem, and it is the same environment on a Mac (Apple Silicon or Intel) or a Linux server.
+#
+#   docker build -f docker/Dockerfile.spark -t scholargraph-spark .
+#   docker run --rm -v "$PWD/data:/app/data" scholargraph-spark python -m scholargraph lake --engine spark
+FROM python:3.12-slim-trixie
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-21-jre-headless procps \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir -e ".[spark]"
+COPY tests ./tests
+ENV SCHOLARGRAPH_DATA=/app/data
+CMD ["python", "-m", "unittest", "tests.test_lake", "-v"]
