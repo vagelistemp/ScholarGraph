@@ -107,6 +107,17 @@ class GoldTest(unittest.TestCase):
             self.assertEqual(set(back), set(GOLD))
             pd.testing.assert_frame_equal(back["papers"], self.gold["papers"], check_dtype=False)
 
+    def test_read_gold_returns_canonical_row_order_whatever_the_file_order(self):
+        """Spark writes Parquet in no guaranteed order; every consumer must still see papers in the same positions."""
+        with tempfile.TemporaryDirectory() as d:
+            shuffled = {k: v.sample(frac=1.0, random_state=3).reset_index(drop=True) for k, v in self.gold.items()}
+            write_gold(shuffled, Path(d))
+            back = read_gold(Path(d))
+        for name, spec in GOLD.items():
+            keys = back[name][spec["key"]].to_records(index=False).tolist()
+            self.assertEqual(keys, sorted(keys), name)
+        self.assertEqual(back["papers"]["paper_id"].tolist(), sorted(self.gold["papers"]["paper_id"]))
+
     def test_contract_violations_are_reported(self):
         broken = dict(self.gold)
         broken["papers"] = self.gold["papers"].drop(columns=["year"])

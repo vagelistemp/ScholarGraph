@@ -17,6 +17,10 @@ def write_gold(tables: Dict[str, pd.DataFrame], gold_dir: Path) -> None:
 
 
 def read_gold(gold_dir: Path, names: Optional[Iterable[str]] = None) -> Dict[str, pd.DataFrame]:
+    """Read gold tables in a **canonical row order** (sorted by each table's key).
+
+    Later phases identify a paper by its row position (graph store, retriever, GNN features, cached embeddings). Spark writes Parquet
+    without any guaranteed row order, so without this sort a rebuilt gold layer could silently misalign every cached vector."""
     gold_dir = Path(gold_dir)
     names = list(names) if names is not None else list(GOLD)
-    return {n: pd.read_parquet(gold_dir / f"{n}.parquet") for n in names}
+    return {n: pd.read_parquet(gold_dir / f"{n}.parquet").sort_values(GOLD[n]["key"], kind="mergesort").reset_index(drop=True) for n in names}

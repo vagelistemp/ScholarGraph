@@ -31,7 +31,7 @@ No benchmark number is reported anywhere in this repository because none has bee
 
 ```bash
 pip install -e ".[dl,serve,baseline]"        # Python 3.10+; add ",spark" (Java 17/21) or ",graph" (Neo4j) as needed
-python -m unittest discover -s tests -t .    # 79 tests, about a minute
+python -m unittest discover -s tests -t .    # 85 tests, about a minute
 python -m scholargraph demo                  # all five phases on a synthetic network, no downloads
 ```
 
@@ -67,7 +67,7 @@ OpenAlex data is CC0. The downloader reads an optional API key from the environm
 
 ```
 src/scholargraph/   ingest, lake, graph, gnn, finetune, rag, agent, evalkit, api (+ cli, llm, embeddings, schemas)
-tests/              79 unit tests (lake, graph, gnn, finetune, rag_agent)
+tests/              85 unit tests (lake, graph, gnn, finetune, rag_agent, embeddings)
 docker/             Dockerfile.spark, neo4j.yml
 docs/               the two PDFs, figures, and the sources that build them (docs/build)
 scripts/            make_fixture.py, make_figures.py

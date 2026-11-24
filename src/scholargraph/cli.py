@@ -112,7 +112,7 @@ def _citation_data(a, p: Paths):
     gold = _gold(p)
     enc, texts = _encoder(a.encoder, gold, a.device)
     slug = a.encoder.replace("/", "_").replace("\\", "_").replace(":", "_")
-    emb = embed_corpus(enc, texts, p.embeddings / f"papers_{slug}.npy", batch_size=a.batch_size)
+    emb = embed_corpus(enc, texts, p.embeddings / f"papers_{slug}.npy", batch_size=a.batch_size, tag=a.encoder)
     return load_citation_data(gold, emb, TRAIN_END, VAL_YEAR)
 
 
@@ -166,7 +166,7 @@ def cmd_finetune(a):
     out_dir = p.models / "embedder"
     enc.model.save_pretrained(out_dir)
     enc.tok.save_pretrained(out_dir)
-    tuned = embed_corpus(enc, texts, p.embeddings / "papers.npy", batch_size=a.batch_size)
+    tuned = embed_corpus(enc, texts, p.embeddings / "papers_finetuned.npy", batch_size=a.batch_size, tag="finetuned:" + a.model)
     results["finetuned_encoder"] = evaluate_retrieval(tuned, data, max_queries=a.max_queries)
     results["config"] = {**cfg.__dict__, "model": a.model, "pairs": len(pairs)}
     _save(results, p.models / "embedder_results.json")
@@ -198,8 +198,11 @@ def _service(a):
     p = _paths(a)
     gold = _gold(p)
     cpath = p.graph / "paper_concepts.parquet"
-    enc, _ = _encoder(a.encoder, gold, "auto")
-    return build_service(gold, pd.read_parquet(cpath) if cpath.exists() else None, make_llm(a.llm), enc)
+    from .embeddings import embed_corpus
+    enc, texts = _encoder(a.encoder, gold, "auto")
+    slug = a.encoder.replace("/", "_").replace("\\", "_").replace(":", "_")
+    emb = embed_corpus(enc, texts, p.embeddings / f"papers_{slug}.npy", tag=a.encoder)           # cached: no re-embedding on every start
+    return build_service(gold, pd.read_parquet(cpath) if cpath.exists() else None, make_llm(a.llm), enc, emb)
 
 
 def cmd_ask(a):

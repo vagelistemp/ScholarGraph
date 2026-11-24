@@ -1,7 +1,7 @@
 % ScholarGraph: Implementation Guide | How the system is built, how it is tested, and what is still to be measured | Evangelos Tempelopoulos  ·  package scholargraph (Python, Spark, PyTorch)  ·  companion document: Project Scope and Aims
 
 :::note Summary
-- **Size.** 49 Python files (about 4,100 lines) and 79 unit tests (about 900 lines) across five phases. The tests run in about a minute on a laptop; the one Spark test skips on native Windows and passes in the provided Linux container.
+- **Size.** 49 Python files (about 4,100 lines) and 85 unit tests (about 900 lines) across five phases. The tests run in about a minute on a laptop; the one Spark test skips on native Windows and passes in the provided Linux container.
 - **Verified so far.** (1) The Spark and pandas pipelines produce **identical** gold tables on the same input, verified inside a Linux container with Spark 4.0 and Delta Lake. (2) The agent machinery scores 100% on 35 graph-derived questions when driven by a scripted policy, which validates the tools, the JSON protocol, the question generator and the scoring. (3) The temporal-split and no-leakage properties hold (tested directly). (4) An end-to-end synthetic demo runs through all five phases.
 - **Not yet measured.** No result on the real OpenAlex slice exists yet: the full run needs a GPU or a faster machine and a language model. This guide therefore reports **design and verification**, and marks every real-data result as pending.
 :::
@@ -20,8 +20,8 @@ src/scholargraph/
   agent/      tools.py  agent.py
   evalkit/    questions.py  harness.py
   api/        service.py  app.py
-tests/        test_lake, test_graph, test_gnn, test_finetune, test_rag_agent
-docker/       Dockerfile.spark   (Neo4j compose file and the API image arrive with phase 6)
+tests/        test_lake, test_graph, test_gnn, test_finetune, test_rag_agent, test_embeddings
+docker/       Dockerfile.spark   (Neo4j compose file; the API image arrives with phase 6)
 docs/         these PDFs, figures, and the sources that build them
 ```
 
@@ -41,6 +41,8 @@ Phase 1 writes nine Parquet tables to `data/gold/`; phases 2 to 5 read only thes
 | topics, paper_topics | topic_id; paper_id, topic_id | name, subfield, field; score |
 | venues | venue_id | name, type |
 | keywords | paper_id, keyword | score |
+
+**Row order is part of the contract.** Later phases identify a paper by its row position (graph store, retriever, GNN node features, cached embedding matrices), but Spark writes Parquet with no guaranteed row order. `read_gold` therefore sorts every table by its key, and `embed_corpus` stores a fingerprint (a hash of the texts in order plus an encoder tag) next to each cached matrix and refuses to reuse it on any mismatch. Both behaviours are tested; without them a rebuilt gold layer could silently misalign every cached vector.
 
 The `cited_by_count` column comes from OpenAlex and **includes citations from the future** relative to any training cut-off; no model uses it as a feature (degrees are recomputed from the message graph).
 
@@ -114,11 +116,12 @@ The `cited_by_count` column comes from OpenAlex and **includes citations from th
 
 | Test module | Tests | What it covers |
 |---|---|---|
-| test_lake | 13 | parsing, abstract reconstruction, real-record fixture, gold rules and planted errors, contract violations, Parquet round trip, Spark equals pandas |
+| test_lake | 14 | parsing, abstract reconstruction, real-record fixture, gold rules and planted errors, contract violations, Parquet round trip, canonical row order, Spark equals pandas |
 | test_graph | 19 | store queries against raw tables and networkx, Neo4j loader order and batching, concept extraction, grounding, caching, agreement metric |
 | test_gnn | 12 | temporal split, hidden-paper property, no test edge in any graph, negatives, metrics and ties, mean aggregation, training beats chance, baseline features by hand |
 | test_finetune | 10 | no future text in training pairs, hard negatives, loss masking, retrieval metrics by hand, contrastive training improves retrieval, LoRA freezing and masking |
 | test_rag_agent | 25 | BM25 formula, fusion, graph bonus, guardrails, abstention, agent robustness, question answers against raw tables, scripted policy at 100%, judge parsing, API endpoints and metrics |
+| test_embeddings | 5 | embedding cache reused only for the same texts and encoder, rejected on reordering, unit-length vectors |
 
 Run all with `python -m unittest discover -s tests -t .`.
 

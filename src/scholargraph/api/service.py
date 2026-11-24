@@ -43,15 +43,3 @@ def build_service(tables, concepts: Optional[pd.DataFrame] = None, llm: Optional
     rag = GraphRAG(retriever, store, metered, k=k)
     agent = Agent(metered, make_tools(store, retriever))
     return Service(store, retriever, rag, agent, metered)
-
-
-def load_service(data_dir: Path, llm_spec: str = "ollama:llama3.2:3b", encoder=None) -> Service:
-    paths = Paths(Path(data_dir))
-    tables = read_gold(paths.gold)
-    cpath = paths.graph / "paper_concepts.parquet"
-    concepts = pd.read_parquet(cpath) if cpath.exists() else None
-    emb_path = paths.embeddings / "papers.npy"
-    emb = np.load(emb_path) if emb_path.exists() else None
-    if emb is not None and encoder is None:
-        raise ValueError("embeddings found but no encoder to embed queries with; pass --encoder (the same model that made papers.npy)")
-    return build_service(tables, concepts, make_llm(llm_spec), encoder, emb)

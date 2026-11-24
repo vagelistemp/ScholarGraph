@@ -141,19 +141,38 @@ def HFEncoder(model_name: str = "sentence-transformers/all-MiniLM-L6-v2", max_le
     return _HF()
 
 
+def fingerprint(texts: Sequence[str], tag: str = "") -> str:
+    """Hash of the texts (in order) and a tag naming the encoder: identifies exactly which matrix belongs to which corpus."""
+    h = hashlib.sha1(f"{tag}|{len(texts)}".encode())
+    for t in texts:
+        h.update(t.encode("utf-8", errors="ignore"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
 def embed_corpus(encoder, texts: Sequence[str], cache_path: Optional[Path] = None, batch_size: int = 64,
-                 log: Callable[[str], None] = print) -> np.ndarray:
-    """Encode all texts once and cache the matrix as ``.npy``. The cache is only valid for the same number of texts."""
-    if cache_path and Path(cache_path).exists():
-        arr = np.load(cache_path)
-        if len(arr) == len(texts):
-            return arr
+                 log: Callable[[str], None] = print, tag: str = "") -> np.ndarray:
+    """Encode all texts once and cache the matrix as ``.npy`` plus a ``.fingerprint`` file.
+
+    The cache is reused only if the fingerprint of the *texts and encoder tag* matches. Row i of the matrix must belong to text i; a
+    length check alone would accept a matrix built from a differently ordered or different corpus and silently misalign everything."""
+    fp = fingerprint(texts, tag)
+    if cache_path:
+        cache_path = Path(cache_path)
+        side = cache_path.with_suffix(".fingerprint")
+        if cache_path.exists() and side.exists() and side.read_text(encoding="utf-8").strip() == fp:
+            arr = np.load(cache_path)
+            if len(arr) == len(texts):
+                return arr
+        elif cache_path.exists():
+            log("  embedding cache does not match this corpus or encoder; recomputing")
     chunks = []
     for i in range(0, len(texts), 4096):
         chunks.append(encoder.encode(texts[i:i + 4096], batch_size=batch_size))
         log(f"  encoded {min(i + 4096, len(texts)):,} / {len(texts):,}")
     arr = np.concatenate(chunks).astype(np.float32) if chunks else np.zeros((0, getattr(encoder, "dim", 0)), dtype=np.float32)
     if cache_path:
-        Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(cache_path, arr)
+        cache_path.with_suffix(".fingerprint").write_text(fp, encoding="utf-8")
     return arr

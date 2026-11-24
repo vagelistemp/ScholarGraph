@@ -20,6 +20,7 @@ papers of the test set.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -44,6 +45,14 @@ class CitationData:
     @property
     def n(self) -> int:
         return len(self.ids)
+
+    @cached_property
+    def topic_index(self):
+        """(paper indices sorted by topic, start offset of each topic, size of each topic): O(1) sampling from a topic."""
+        order = np.argsort(self.topic, kind="stable")
+        counts = np.bincount(self.topic, minlength=int(self.topic.max()) + 1)
+        start = np.concatenate([[0], np.cumsum(counts)[:-1]])
+        return order, start, counts
 
     def edge_year(self) -> np.ndarray:
         return self.year[self.edges[:, 0]]
@@ -84,7 +93,7 @@ def sample_negatives(data: CitationData, src: np.ndarray, k: int, rng: np.random
     """``k`` negative cited papers for each source paper: published no later than the source, not the source itself and never a real
     citation of it. ``hard_frac`` of them are drawn from the source's own topic (harder than uniform random papers)."""
     n = data.n
-    by_topic = {t: np.flatnonzero(data.topic == t) for t in np.unique(data.topic)}
+    order, start, counts = data.topic_index                  # papers sorted by topic, built once per dataset
     out = np.full((len(src), k), -1, dtype=np.int64)
     for attempt in range(60):
         need = np.argwhere(out < 0)
@@ -92,11 +101,11 @@ def sample_negatives(data: CitationData, src: np.ndarray, k: int, rng: np.random
             break
         rows, cols = need[:, 0], need[:, 1]
         cand = rng.integers(0, n, size=len(need))
-        if hard_frac > 0:
+        if hard_frac > 0:                                    # vectorised draw of a random paper from the source's own topic
             hard = rng.random(len(need)) < hard_frac
-            for t in np.unique(data.topic[src[rows[hard]]]):
-                sel = hard & (data.topic[src[rows]] == t)
-                cand[sel] = rng.choice(by_topic[t], size=int(sel.sum()))
+            t = data.topic[src[rows]]
+            pick = start[t] + (rng.random(len(need)) * counts[t]).astype(np.int64)
+            cand = np.where(hard, order[np.minimum(pick, n - 1)], cand)
         u = src[rows]
         ok = (cand != u) & (data.year[cand] <= data.year[u]) & ~_in_codes(u.astype(np.int64) * n + cand, forbidden)
         out[rows[ok], cols[ok]] = cand[ok]
