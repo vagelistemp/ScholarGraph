@@ -131,9 +131,10 @@ def cmd_train_gnn(a):
     from .gnn.train import TrainConfig, train_gnn
     p = _paths(a)
     data = _citation_data(a, p)
-    cfg = TrainConfig(epochs=a.epochs, hidden=a.hidden, device=a.device, max_eval_pairs=a.max_eval)
+    cfg = TrainConfig(epochs=a.epochs, hidden=a.hidden, device=a.device, max_eval_pairs=a.max_eval, seed=a.seed)
     res = train_gnn(data, cfg, tracker=Tracker("gnn", "run", p.root / "runs"))
-    _save({"config": cfg.__dict__, "best_epoch": res.best_epoch, "val": res.val, "test": res.test, "seconds": res.seconds, "history": res.history}, p.models / "gnn_results.json")
+    name = "gnn_results.json" if a.seed == 0 else f"gnn_results_seed{a.seed}.json"
+    _save({"config": cfg.__dict__, "best_epoch": res.best_epoch, "val": res.val, "test": res.test, "seconds": res.seconds, "history": res.history}, p.models / name)
     import torch
     torch.save(res.model.state_dict(), p.models / "gnn.pt")
 
@@ -348,6 +349,7 @@ def main(argv=None) -> int:
     for name, fn in (("baseline", cmd_baseline), ("train-gnn", cmd_train_gnn)):
         s = add(name, fn); s.add_argument("--encoder", default="tfidf"); s.add_argument("--device", default="auto"); s.add_argument("--batch-size", type=int, default=64)
         s.add_argument("--max-eval", type=int, default=20000); s.add_argument("--epochs", type=int, default=40); s.add_argument("--hidden", type=int, default=128)
+        s.add_argument("--seed", type=int, default=0)
     s = add("finetune", cmd_finetune); s.add_argument("--model", default="sentence-transformers/all-MiniLM-L6-v2"); s.add_argument("--epochs", type=int, default=1)
     s.add_argument("--batch-size", type=int, default=32); s.add_argument("--lr", type=float, default=2e-5); s.add_argument("--max-pairs", type=int, default=200_000)
     s.add_argument("--max-queries", type=int, default=2000); s.add_argument("--device", default="auto"); s.add_argument("--hard-negatives", action="store_true")

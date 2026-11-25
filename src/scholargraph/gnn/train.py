@@ -29,7 +29,7 @@ class TrainConfig:
     hard_frac: float = 0.5            # share of training negatives drawn from the source paper's own topic
     batch_pairs: int = 4096           # supervision pairs per optimizer step
     steps_per_epoch: int = 30         # optimizer steps per epoch (each re-encodes the graph); one giant batch per epoch means far too few updates
-    patience: int = 6
+    patience: int = 20                # validation MRR can dip before a long climb (seen on real data); a short patience stops far too early
     max_eval_pairs: int = 20_000
     k_neg: int = 99
     seed: int = 0
