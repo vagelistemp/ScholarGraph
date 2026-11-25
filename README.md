@@ -8,17 +8,37 @@ A scholarly **knowledge-graph platform** over [OpenAlex](https://openalex.org): 
 
 ## Status (read this first)
 
-The system is **implemented and unit-tested, but not yet run at full scale on the real data**. This table says exactly what has been verified.
+The system is **implemented and unit-tested**, and a **small real-data run** (10,000 real papers, CPU only) has been done; the full-scale run (300,000 papers, GPU or Mac, a real language model) has not. This table says exactly what has been verified.
 
 | Phase | What it is | Implemented | Unit-tested | Real-data run |
 |---|---|---|---|---|
-| 1. Lakehouse | resumable OpenAlex download, bronze / silver (Delta) / gold (Parquet), data-quality checks | yes | yes (Spark = pandas, verified in a Linux container) | pending |
-| 2. Knowledge graph | store interface, in-memory and Neo4j stores, rule and LLM concept extraction with grounding | yes | yes (Neo4j loader tested with a recording driver) | pending; live Neo4j check pending |
-| 3. Graph neural network | temporal split, hidden-paper protocol, directed GraphSAGE in plain PyTorch, boosted-tree baseline | yes | yes | pending |
+| 1. Lakehouse | resumable OpenAlex download, bronze / silver (Delta) / gold (Parquet), data-quality checks | yes | yes (Spark = pandas, verified in a Linux container) | 10,000-paper slice done (pandas engine); full slice pending |
+| 2. Knowledge graph | store interface, in-memory and Neo4j stores, rule and LLM concept extraction with grounding | yes | yes (Neo4j loader tested with a recording driver; live Neo4j parity test passed) | rule-based concepts on the 10,000-paper slice done; LLM extraction pending |
+| 3. Graph neural network | temporal split, hidden-paper protocol, directed GraphSAGE in plain PyTorch, boosted-tree baseline | yes | yes | 10,000-paper slice done: baseline and GNN, 3 seeds; full slice pending |
 | 4. Fine-tuning | contrastive encoder (InfoNCE, hard negatives), LoRA concept extractor, retrieval evaluation | yes | yes (wiring, leakage, metrics) | pending (GPU or Apple Silicon) |
-| 5. GraphRAG agent | BM25 + dense + graph retrieval, guardrails, 12-tool agent, evaluation harness, FastAPI + metrics | yes | yes (scripted policy scores 100% on 35 graph-derived questions) | pending (needs an LLM) |
+| 5. GraphRAG agent | BM25 + dense + graph retrieval, guardrails, 12-tool agent, evaluation harness, FastAPI + metrics | yes | yes (scripted policy scores 100% on graph-derived questions, synthetic and real) | retrieval benchmark and System 1 on the real slice done; a small local-model check: see the Implementation Guide |
+| 5b. Reliability and advanced agents | evaluation upgrades, OpenTelemetry tracing, lifecycle hooks, structured output, System 1 layer (safety, cache, direct handlers, trained router and verifier), planner and verifier agents, memory with safety rules, MCP server and client, rerankers, communities, multi-hop, efficiency tools, DPO | yes | yes (live Neo4j parity and a real MCP subprocess included) | partly: see "Real-data smoke run" |
 
-No benchmark number is reported anywhere in this repository because none has been measured on real data yet. The documents describe the design, the evaluation protocol and the verification done so far; results will be added after the full run.
+Numbers appear only where they were measured: the small real-data run below. Everything else (full-scale run, neural encoders, fine-tuning, stronger language models) is marked pending in the Implementation Guide.
+
+## Real-data smoke run (10,000 papers, CPU, no API key)
+
+A first run on 10,000 real, highly cited AI papers (24 MB of raw pages), with TF-IDF text features and no language model. Real measurements on a small slice, **not the final results**; details and caveats are in the Implementation Guide.
+
+| Citation prediction (cold start, test = citations of 2024-2025 papers, 99 negatives each) | Hits@10 | MRR | AUC |
+|---|---|---|---|
+| popularity of the candidate | 0.365 | 0.206 | 0.643 |
+| text cosine alone | 0.698 | 0.405 | 0.883 |
+| boosted trees, eight hand-made features | 0.703 | 0.385 | 0.908 |
+| graph neural network (mean of 3 seeds) | **0.760** | **0.458** | **0.923** |
+
+| Retrieval (300 test-period queries, leak-free graph) | MRR | Recall@20 |
+|---|---|---|
+| BM25 / dense / hybrid | 0.369 / 0.360 / 0.393 | 0.151 / 0.153 / 0.159 |
+| hybrid + graph bonus | **0.449** | **0.202** |
+| hybrid + lexical reranker (hurts) | 0.273 | 0.132 |
+
+On 70 questions generated from the real graph the System-1 engine answered all of them exactly with **zero model calls** (mean 11 ms); the same questions through the agent cost 2.9 model calls each. The run also exposed several problems that the unit tests had missed (an API paging rule, a leak of the future into training, a leaky retrieval benchmark); each is now fixed and tested, and described in the Implementation Guide.
 
 ## Documentation
 
@@ -31,7 +51,7 @@ No benchmark number is reported anywhere in this repository because none has bee
 
 ```bash
 pip install -e ".[dl,serve,baseline]"        # Python 3.10+; add ",spark" (Java 17/21) or ",graph" (Neo4j) as needed
-python -m unittest discover -s tests -t .    # 85 tests, about a minute
+python -m unittest discover -s tests -t .    # 224 tests (live Neo4j tests run only with NEO4J_URI set)
 python -m scholargraph demo                  # all five phases on a synthetic network, no downloads
 ```
 
@@ -44,8 +64,10 @@ python -m scholargraph lake --engine pandas  # or --engine spark (Linux / macOS 
 python -m scholargraph concepts --extractor rules
 python -m scholargraph baseline && python -m scholargraph train-gnn
 python -m scholargraph finetune --hard-negatives
-python -m scholargraph serve --llm ollama:llama3.2:3b
-python -m scholargraph eval-agent --llm ollama:llama3.2:3b
+python -m scholargraph serve --llm ollama:llama3.2:3b          # POST /query runs the System-1 engine
+python -m scholargraph query "Who wrote the paper titled \"...\"?"   # route, answer, model calls, milliseconds
+python -m scholargraph eval-agent --engine --golden data/eval/golden.json --baseline data/eval/baseline.json
+python -m scholargraph mcp-serve                                 # expose the graph tools to any MCP client
 ```
 
 Spark on native Windows needs the Hadoop `winutils` helper; use the Docker image instead:
@@ -66,8 +88,8 @@ OpenAlex data is CC0. The downloader reads an optional API key from the environm
 ## Layout
 
 ```
-src/scholargraph/   ingest, lake, graph, gnn, finetune, rag, agent, evalkit, api (+ cli, llm, embeddings, schemas)
-tests/              85 unit tests (lake, graph, gnn, finetune, rag_agent, embeddings)
+src/scholargraph/   ingest, lake, graph, gnn, finetune, rag, agent, evalkit, api, system1, memory, mcp (+ cli, llm, structured, observability, efficiency, embeddings, schemas)
+tests/              224 tests (lake, ingest, graph, neo4j live, gnn, finetune, rag/agent, embeddings, structured output, hooks and tracing, evalkit, system1, multi-agent, memory, retrieval upgrades, mcp, efficiency and learning)
 docker/             Dockerfile.spark, neo4j.yml
 docs/               the two PDFs, figures, and the sources that build them (docs/build)
 scripts/            make_fixture.py, make_figures.py

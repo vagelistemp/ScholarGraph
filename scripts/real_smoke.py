@@ -24,7 +24,7 @@ from scholargraph.config import TRAIN_END, VAL_YEAR, Paths
 from scholargraph.demo import ScriptedPolicyLLM
 from scholargraph.evalkit.harness import run_agent_eval
 from scholargraph.evalkit.questions import generate_questions
-from scholargraph.evalkit.retrieval_bench import evaluate_search_fn
+from scholargraph.evalkit.retrieval_bench import evaluate_search_fn, leak_free_tables
 from scholargraph.gnn.data import load_citation_data
 from scholargraph.lake.gold import read_gold
 from scholargraph.llm import MeteredLLM
@@ -57,8 +57,10 @@ def main() -> None:
     svc = build_service(gold, concepts, MeteredLLM(ScriptedPolicyLLM()))
     papers = gold["papers"]
     texts = (papers["title"] + ". " + papers["abstract"]).tolist()
-    data = load_citation_data(gold, svc.encoder_matrix if hasattr(svc, "encoder_matrix") else svc.retriever.emb, TRAIN_END, VAL_YEAR)
-    r = svc.retriever
+    data = load_citation_data(gold, svc.retriever.emb, TRAIN_END, VAL_YEAR)
+    # the retrieval benchmark must not see the test-period citations (they are the answers): use a service built on the leak-free graph
+    bsvc = build_service(leak_free_tables(gold, data), concepts, MeteredLLM(ScriptedPolicyLLM()))
+    r = bsvc.retriever
     idx = lambda hits: [r.idx[h.paper_id] for h in hits]  # noqa: E731
     configs = {
         "bm25": lambda q, i: idx(r.search(q, k=20, use_dense=False)),
@@ -71,7 +73,7 @@ def main() -> None:
     out["retrieval"] = {}
     for name, fn in configs.items():
         t0 = time.time()
-        out["retrieval"][name] = {**evaluate_search_fn(fn, data, texts, max_queries=a.max_queries), "seconds": round(time.time() - t0, 1)}
+        out["retrieval"][name] = {**evaluate_search_fn(fn, data, texts, max_queries=a.max_queries, store=bsvc.store), "seconds": round(time.time() - t0, 1)}
         print(name, {k: round(v, 3) for k, v in out["retrieval"][name].items()}, flush=True)
 
     store = svc.store

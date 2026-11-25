@@ -6,7 +6,7 @@ import scipy.sparse as sp
 
 from scholargraph.api.service import build_service
 from scholargraph.demo import ScriptedPolicyLLM, make_demo_concepts, make_demo_gold, make_demo_text
-from scholargraph.evalkit.retrieval_bench import evaluate_search_fn
+from scholargraph.evalkit.retrieval_bench import BenchmarkLeak, evaluate_search_fn, leak_free_tables
 from scholargraph.gnn.data import load_citation_data
 from scholargraph.graph.store import MemoryGraphStore
 from scholargraph.llm import FakeLLM
@@ -117,6 +117,20 @@ class BenchTest(Fixture):
             self.assertTrue(0.0 <= m["mrr"] <= 1.0 and 0.0 <= m["recall@10"] <= 1.0, (name, m))
             self.assertEqual(m["n_queries"], 60)
         self.assertGreaterEqual(res["hybrid"]["recall@20"], 0.0)
+
+    def test_a_store_with_test_period_citations_is_rejected_and_it_would_inflate_the_graph_bonus(self):
+        """Found on real data: the query paper is in the index, so its own edges leak the answers through the graph bonus."""
+        text = make_demo_text(self.gold, 32)
+        data = load_citation_data(self.gold, text, 2022, 2023)
+        texts = (self.papers["title"] + ". " + self.papers["abstract"]).tolist()
+        with self.assertRaises(BenchmarkLeak):
+            evaluate_search_fn(lambda q, i: [], data, texts, max_queries=5, store=self.store)           # the full graph contains the test edges
+        clean_svc = build_service(leak_free_tables(self.gold, data), self.concepts, ScriptedPolicyLLM())
+        evaluate_search_fn(lambda q, i: [], data, texts, max_queries=5, store=clean_svc.store)          # accepted
+        fn = lambda svc: (lambda q, i: [svc.retriever.idx[h.paper_id] for h in svc.retriever.search(q, k=20, graph_weight=0.5)])  # noqa: E731
+        leaky = evaluate_search_fn(fn(self.svc), data, texts, max_queries=80)["mrr"]
+        clean = evaluate_search_fn(fn(clean_svc), data, texts, max_queries=80, store=clean_svc.store)["mrr"]
+        self.assertGreater(leaky, clean)                                # the leak makes the graph bonus look better than it is
 
     def test_the_metric_is_exact_on_a_hand_made_search_function(self):
         text = make_demo_text(self.gold, 32)

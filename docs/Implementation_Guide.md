@@ -1,7 +1,7 @@
 % ScholarGraph: Implementation Guide | How the system is built, how it is tested, and what is still to be measured | Evangelos Tempelopoulos  ·  package scholargraph (Python, Spark, PyTorch)  ·  companion document: Project Scope and Aims
 
 :::note Summary
-- **Size.** 49 Python files (about 4,100 lines) and 85 unit tests (about 900 lines) across five phases. The tests run in about a minute on a laptop; the one Spark test skips on native Windows and passes in the provided Linux container.
+- **Size.** 79 Python files (about 7,400 lines) and 224 tests (about 2,750 lines) across five phases. The tests run in a few minutes on a laptop; the Spark test skips on native Windows and passes in the provided Linux container; the live Neo4j test runs when a server is available (it passed).
 - **Verified so far.** (1) The Spark and pandas pipelines produce **identical** gold tables on the same input, verified inside a Linux container with Spark 4.0 and Delta Lake. (2) The agent machinery scores 100% on 35 graph-derived questions when driven by a scripted policy, which validates the tools, the JSON protocol, the question generator and the scoring. (3) The temporal-split and no-leakage properties hold (tested directly). (4) An end-to-end synthetic demo runs through all five phases.
 - **Not yet measured.** No result on the real OpenAlex slice exists yet: the full run needs a GPU or a faster machine and a language model. This guide therefore reports **design and verification**, and marks every real-data result as pending.
 :::
@@ -112,20 +112,60 @@ The `cited_by_count` column comes from OpenAlex and **includes citations from th
 
 **API (api/).** FastAPI endpoints `/health`, `/stats`, `/search`, `/paper/{id}`, `/ask`, `/agent` and `/metrics` (Prometheus text format with request counts, latency histograms and LLM token counters). Every response carries an `X-Request-ID`, and each request is logged as one JSON line.
 
-# 8. Testing
+# 8. Phase 5b: reliability, control and advanced agents
+
+![The five stages of the query engine](system1_flow.png|640)
+
+This layer wraps the Phase 5 agent in the engineering that makes a language-model system dependable. Every item is unit-tested; the model-dependent parts are exercised with scripted stand-ins, so no result below depends on a real model.
+
+**Evaluation upgrades.** Beyond the final answer the harness scores the *trajectory* (precision of tool calls against the optimal sequence for the question type, efficiency, whether the optimal order occurs, error steps), reports p50 and p95 latency, tokens and model calls per question and the **share of requests handled without a model**. A golden question set can be frozen and `compare_reports` fails a change that lowers quality (absolute tolerance 0.02) or raises cost (relative tolerance 25%), listing the questions that flipped from right to wrong.
+
+**Observability.** A tracer interface with a no-op, an in-memory and an OpenTelemetry implementation records nested spans for requests, model calls and tool calls with the OpenTelemetry GenAI attribute names (`gen_ai.request.model`, `gen_ai.usage.input_tokens`, ...). The OpenTelemetry bridge is tested against the SDK's in-memory exporter.
+
+**Lifecycle hooks.** Seven events (before/after model call, before/after tool call, before final answer, on error, on finish) let plug-ins allow, block, stop or modify. Built-in hooks: budgets (model calls, tool calls, tokens, seconds), tool allow-list, human approval, redaction of e-mail, phone and card numbers, loop guard, tracing, grounding check and memory. A crashing hook is isolated.
+
+**Structured output.** Schemas are validated locally (a dependency-free JSON-Schema subset); Ollama and OpenAI-compatible providers receive the schema for constrained decoding; a repair loop feeds validation errors back to the model. The agent protocol also supports several independent tool calls in one turn, executed in parallel threads.
+
+**System 1 layer.** A request passes through a safety check (length, prompt-injection patterns, PII redaction), an answer cache (exact and semantic, with a numbers-and-quotes signature guard, TTL and LRU eviction, verified answers only), direct handlers (regular expressions and graph lookups for the seven exact question families, no model), a trained intent classifier (route: lookup, topic search, analysis, off-topic) and a trained answer verifier. On unseen phrasings the lexical (TF-IDF) classifier reaches 0.60 accuracy and the semantic (MiniLM embedding) classifier 0.91; both numbers are measured on template-generated questions and will be lower on real users.
+
+**Better agents.** A planner produces at most five subtasks (schema-validated, with a single-task fallback), grouped into dependency waves that run in parallel on specialist sub-agents with restricted tool sets; a synthesiser writes the answer from the sub-results and a verifier requires every item to appear in the tools' observations, repairing once and then dropping unsupported items. The same check exists as a before-final hook for a single agent.
+
+**Memory.** Working memory keeps recent turns and a rolling summary; long-term memory stores semantic and episodic notes with provenance, trust, importance, recency decay (half-life), de-duplication and eviction. The write policy only stores user statements about themselves and verified answers, rejects instruction-like or sensitive text, redacts personal data and honours "what do you remember", "forget about X" and "forget everything". An end-to-end test shows that a poisoned abstract read by the agent never reaches memory while a user preference carries over to a new session.
+
+**Interoperability (MCP).** The twelve read-only graph tools are exposed as an MCP server over stdio (JSON-RPC 2.0, protocol version negotiation, `tools/list` with JSON Schemas derived from the tool signatures, `tools/call` with `isError` semantics, standard error codes). A client wraps remote tools as local ones; the integration test starts a real server subprocess and lets the agent answer a question using only remote tools.
+
+**Retrieval and GraphRAG upgrades.** Rerankers (lexical, bi-encoder, cross-encoder, late-interaction MaxSim), lexicon expansion, LLM query rewriting, HyDE, multi-query fusion, contextual indexing (year, venue, topic and concepts prepended to the indexed text), Louvain communities with reports and a map-reduce global answerer that cites communities and abstains when none knows, and multi-hop retrieval that returns the citation path of every result (the test verifies that each explained edge exists).
+
+**Efficiency and learning.** A disk cache for deterministic model calls, a small-to-large cascade, context truncation, a memory estimator (weights plus KV cache) and an MLX wrapper for Apple Silicon (not testable here). Direct Preference Optimization with LoRA (the reference model is the adapter switched off) and builders that turn agent traces into preference pairs at the first divergence of a correct and a wrong run, and into supervised data from correct runs.
+
+# 9. Testing
 
 | Test module | Tests | What it covers |
 |---|---|---|
 | test_lake | 14 | parsing, abstract reconstruction, real-record fixture, gold rules and planted errors, contract violations, Parquet round trip, canonical row order, Spark equals pandas |
+| test_ingest_openalex | 6 | keyless page mode and its 10,000 cap, cursor mode with a key, helpful 401 error, resume after a budget stop, slice protection (mock OpenAlex server) |
 | test_graph | 19 | store queries against raw tables and networkx, Neo4j loader order and batching, concept extraction, grounding, caching, agreement metric |
-| test_gnn | 12 | temporal split, hidden-paper property, no test edge in any graph, negatives, metrics and ties, mean aggregation, training beats chance, baseline features by hand |
+| test_neo4j_live | 6 | every store method against a live Neo4j server (skipped unless `NEO4J_URI` is set) |
+| test_gnn | 13 | temporal split, hidden papers are isolated, no test edge in any graph, negatives, metrics and ties, aggregation by hand, training beats chance, tracker integration, baseline features by hand |
 | test_finetune | 10 | no future text in training pairs, hard negatives, loss masking, retrieval metrics by hand, contrastive training improves retrieval, LoRA freezing and masking |
 | test_rag_agent | 25 | BM25 formula, fusion, graph bonus, guardrails, abstention, agent robustness, question answers against raw tables, scripted policy at 100%, judge parsing, API endpoints and metrics |
 | test_embeddings | 5 | embedding cache reused only for the same texts and encoder, rejected on reordering, unit-length vectors |
+| test_structured | 8 | schema validator, repair loop, provider request bodies for constrained decoding |
+| test_hooks_observability | 18 | hook ordering and isolation, budgets, allow-list, approval, redaction, loop guard, final-answer rejection, parallel tool calls, nested spans, OpenTelemetry bridge |
+| test_evalkit_upgrades | 10 | trajectory metrics by hand, regression comparison, golden-set round trip |
+| test_system1 | 21 | safety, cache (TTL, LRU, semantic guards), direct handlers vs the graph, classifier generalisation (lexical and semantic), verifier, engine routes, harness integration |
+| test_api_query | 4 | the `/query` endpoint, route counters in the metrics |
+| test_multi_agent | 10 | plans, waves, restricted specialists, grounding hook, repair and drop of unsupported items, parallel subtasks |
+| test_memory | 16 | scoring and decay, merge, eviction, expiry, trust, poisoning attempts, user commands, cross-session recall, working memory |
+| test_retrieval_upgrades | 17 | rerankers, MaxSim, query rewriting, multi-query fusion, contextual text, retrieval benchmark, communities, global answers, multi-hop paths |
+| test_mcp | 9 | handshake, schemas, call results, error codes, stdio loop, real subprocess integration |
+| test_efficiency_learning | 13 | cache, cascade, truncation, memory estimate, benchmark, DPO loss by hand, preference pairs from traces, DPO training |
+
+224 tests in total (218 run on a machine without Neo4j; the Spark equivalence test also needs Linux or Docker).
 
 Run all with `python -m unittest discover -s tests -t .`.
 
-# 9. How to run it
+# 10. How to run it
 
 ```
 pip install -e ".[dl,serve,baseline]"      # add ",spark" on Linux or in the container, ",graph" for Neo4j
@@ -140,25 +180,67 @@ python -m scholargraph serve --llm ollama:llama3.2:3b
 python -m scholargraph eval-agent --llm ollama:llama3.2:3b
 ```
 
-# 10. Results
+# 11. Results
+
+## 11.1 Verification (no real data needed)
+
+| Experiment | Outcome |
+|---|---|
+| Spark equals pandas on the same input | verified (synthetic bronze pages, Linux container) |
+| Live Neo4j store equals the in-memory store on all 15 methods | verified (Neo4j 5 in Docker, synthetic graph) |
+| MCP server and client over real pipes | verified (server subprocess; agent answers using only remote tools) |
+| Agent plumbing validated by a scripted policy | verified (100% exact match on the graph-derived questions, on synthetic **and** on the real graph) |
+
+## 11.2 First real-data run (10,000 papers, CPU only, no API key)
+
+These are measured results on a **small, highly cited slice** with TF-IDF text features and no language model. They are real, but they are *not* the project's final numbers.
+
+**Data.** 10,000 most cited English AI works 2015 to 2025 downloaded in page mode (24 MB of compressed raw pages, so the 300,000-paper slice would need about 0.7 GB). The gold layer has 9,993 papers, 35,747 authors, 54,646 authorships, 80,915 citations *between papers of the slice* (3.8% of papers have none), 808 topics and 1,405 venues; all quality checks pass; the rule-based extractor finds 12,749 concept links of 71 distinct concepts. The lakehouse step takes about 10 seconds.
+
+**Citation prediction.** The test period is the 18,072 citations made by 2024 and 2025 papers; each of 3,000 sampled test citations is ranked among 99 time-consistent negatives; the model only sees the graph up to 2023 (cold start). Hits@10 / MRR / AUC:
+
+| Method | Hits@10 | MRR | AUC |
+|---|---|---|---|
+| popularity of the candidate | 0.365 | 0.206 | 0.643 |
+| authors cited it before | 0.134 | 0.125 | 0.563 |
+| text cosine (TF-IDF + SVD) alone | 0.698 | 0.405 | 0.883 |
+| boosted trees on eight hand-made features (one run) | 0.703 | 0.385 | 0.908 |
+| graph neural network, mean of 3 seeds (standard deviation) | **0.760** (0.007) | **0.458** (0.017) | **0.923** (0.001) |
+
+The GNN beats the strongest baseline consistently across seeds (training takes about 2 minutes on a CPU), but the margin is moderate and the baseline was run once, so its own variability is unknown. The GNN's pair scorer also receives the baseline's hand features, so its gain is what the graph adds on top of them. The development of this result exposed six problems that unit tests had missed (a leak through incoming citations of hidden papers, one optimizer step per epoch, a too-short early-stopping patience, among others); they are listed in the study notes and each now has a test.
+
+**Retrieval.** 300 test-period papers are used as queries (title plus abstract); relevant documents are the papers they cite; the retrieval graph contains no test-period citations (a guard enforces it, see below). Dense retrieval here is TF-IDF + SVD, not a neural encoder:
+
+| Configuration | MRR | Recall@10 | Recall@20 |
+|---|---|---|---|
+| BM25 | 0.369 | 0.115 | 0.151 |
+| dense (TF-IDF + SVD) | 0.360 | 0.111 | 0.153 |
+| hybrid (BM25 + dense, reciprocal rank fusion) | 0.393 | 0.118 | 0.159 |
+| hybrid + graph bonus | **0.449** | **0.153** | **0.202** |
+| hybrid + lexical reranker | 0.273 | 0.086 | 0.132 |
+| multi-query with lexicon expansion | 0.386 | 0.117 | 0.163 |
+
+Fusion beats either list alone and the graph bonus adds a further clear gain. The simple lexical reranker **hurts** (it discards the first-stage signals), which is reported as measured; a real cross-encoder has not been run. A first version of this benchmark reported an MRR of 0.756 for the graph bonus. That number was a **leak**: the query paper is itself in the index, so its own text ranks it first and the graph bonus boosted its references, which are the answers. The benchmark now rejects any graph store that contains test-period citations (`BenchmarkLeak`) and a test shows the inflation.
+
+**System 1.** On 70 questions generated from the real graph (ten of each of the seven types) the engine answered all of them exactly, 69 through direct handlers and one from the cache, with **zero model calls** and a mean of 11 ms per question. The same questions through the agent, driven by the scripted policy (the cheapest possible stand-in for a model), need 2.9 model calls per question.
+
+[[LLM]]
+
+## 11.3 Still pending
 
 | Experiment | Status |
 |---|---|
-| Spark equals pandas on the same input | verified (synthetic bronze pages, Linux container) |
-| Agent plumbing validated by a scripted policy | verified (35 questions, 100% exact match) |
-| Baseline versus GNN on real citations | pending full run |
-| TF-IDF versus base versus fine-tuned encoder on real retrieval | pending full run |
-| LoRA extractor before and after fine-tuning | pending full run |
-| Agent and GraphRAG with a real language model | pending full run |
+| The full 300,000-paper slice (needs a free OpenAlex key) | pending |
+| Neural text encoder, contrastive fine-tuning, LoRA extractor | pending (needs a GPU or the Apple Silicon Mac) |
+| Cross-encoder reranking, HyDE and query rewriting with a model | pending |
+| Agent and GraphRAG with a stronger language model, DPO on real traces | pending |
 
-The numbers of the synthetic demo are deliberately not reported here: they come from a generator with planted structure and say nothing about real citation behaviour.
+# 12. Limitations
 
-# 11. Limitations
-
-- **Real-data results do not exist yet.** Everything above is design plus verification on synthetic data and fixtures.
+- **Real-data results are preliminary.** They come from a 10,000-paper slice of the most cited papers (a dense citation core), TF-IDF text features, one run of the baseline and three seeds of the GNN; the full-scale run is pending.
 - **Time-consistency inside training.** The message graph of a training paper contains edges from papers published after it (within the training period). This is a distribution shift, not leakage of the target, and test-time graphs are strictly in the past; a stricter per-paper time cut would remove it at a large cost.
 - **Citation counts are future-contaminated** and are therefore not used as features.
 - **Concept extraction is bounded by its labels.** The LoRA model learns from the teacher's labels and inherits their mistakes; the rule lexicon is small.
 - **Grounding is lexical.** The groundedness measure is a proxy; the LLM judge is stronger but costs more and has its own biases.
-- **Scope.** One subfield, English abstracts, a bounded agent; the Neo4j store has not yet been exercised against a live server.
+- **Scope.** One subfield, English abstracts, a bounded agent; the Neo4j store was checked against a live server on synthetic data only.
 - **Native Windows.** Spark needs the Hadoop `winutils` helper there; the Docker image avoids this.

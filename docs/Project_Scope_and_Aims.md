@@ -25,6 +25,11 @@ Each aim has a measurable success criterion, defined **before** the full run so 
 | A4. Fine-tuned retrieval | A contrastively fine-tuned encoder is compared with its base model and with TF-IDF on held-out citing papers using Recall@k, MRR and nDCG; no text of a test-period paper is used in training (tested) |
 | A5. Distilled concept extractor | A LoRA-fine-tuned 0.5-billion-parameter model is compared with its un-tuned self on JSON validity and concept F1 against the teacher labels, on test-period abstracts |
 | A6. A trustworthy QA system | A tool-using agent is evaluated on graph-derived questions with exactly known answers; GraphRAG answers carry citations that are checked automatically; the system abstains when evidence is missing; latency and token cost are reported |
+| A8. Dependable agent behaviour | Trajectory evaluation, a frozen golden set with automatic regression checks, tracing with the OpenTelemetry GenAI conventions, lifecycle hooks for budgets, permissions and redaction, schema-validated structured output |
+| A9. A System 1 / System 2 split | A safety check, cache, direct handlers and trained classifiers in front of the language model; the share of requests answered without a model is measured and reported next to quality |
+| A10. Advanced agents with safe memory | A planner with specialist sub-agents and a verifier; long-term memory whose write policy rejects poisoned content (tested end to end); an MCP server and client |
+| A11. Stronger retrieval and global questions | Rerankers, query rewriting, contextual indexing, communities with map-reduce answers and multi-hop retrieval, each compared on one retrieval benchmark |
+| A12. Local efficiency and preference learning | Memory budgeting for a 16 GB machine, caching and cascades, DPO with LoRA and trace-based preference data |
 | A7. Engineering quality | Unit tests for every module, a data contract validated in code, no secrets or personal data in the repository, and documentation that distinguishes tested facts from pending results |
 
 # 3. System overview
@@ -38,6 +43,7 @@ Each aim has a measurable success criterion, defined **before** the full run so 
 | 3. Graph neural network | gold tables, text embeddings | trained model, metrics | temporal split, hidden-paper training protocol, directed GraphSAGE in plain PyTorch, boosted-tree baseline |
 | 4. Fine-tuning | gold tables | fine-tuned encoder and LoRA adapter | InfoNCE with in-batch and hard negatives, false-negative masking, LoRA, leakage tests |
 | 5. GraphRAG agent | graph, retriever, LLM | API, evaluation report | BM25 and dense retrieval with reciprocal rank fusion, graph expansion, JSON tool protocol, guardrails, graph-derived evaluation, FastAPI and metrics |
+| 5b. Reliability and advanced agents | the Phase 5 agent | query engine, memory, MCP server, advanced retrieval | evaluation upgrades, tracing, hooks, structured output, System 1 layer, planner and verifier, memory safety, MCP, reranking, communities, DPO |
 
 # 4. Data
 
