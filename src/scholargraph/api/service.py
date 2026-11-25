@@ -43,3 +43,12 @@ def build_service(tables, concepts: Optional[pd.DataFrame] = None, llm: Optional
     rag = GraphRAG(retriever, store, metered, k=k)
     agent = Agent(metered, make_tools(store, retriever))
     return Service(store, retriever, rag, agent, metered)
+
+
+def build_engine(service: Service, intent_encoder=None, cache_encoder=None, verifier=None, planner=None):
+    """Wrap a service in the System-1 query engine: safety, cache, direct handlers, intent classifier, verifier."""
+    from ..system1.cache import AnswerCache
+    from ..system1.classifier import train_default
+    from ..system1.engine import QueryEngine
+    clf = train_default(service.store, 200, 0, encoder=intent_encoder)
+    return QueryEngine(service.store, service.agent, service.rag, AnswerCache(cache_encoder), clf, verifier, service.llm.usage, planner)

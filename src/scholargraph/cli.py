@@ -220,20 +220,61 @@ def cmd_agent(a):
     print("answer:", r.answer, "| items:", r.items)
 
 
+def _engine(a, svc):
+    from .api.service import build_engine
+    return build_engine(svc)
+
+
+def cmd_query(a):
+    """One question through the whole pipeline: safety, cache, direct handlers, intent classifier, RAG or agent, verifier."""
+    svc = _service(a)
+    r = _engine(a, svc).answer(a.question)
+    print(f"[{r.route}] {r.answer}\n  items={r.items}  verified={r.verified}  llm_calls={r.llm_calls}  {r.seconds * 1000:.0f} ms  flags={r.flags}")
+
+
 def cmd_eval_agent(a):
     from .evalkit.harness import run_agent_eval, save_report
-    from .evalkit.questions import generate_questions
+    from .evalkit.questions import generate_questions, load_questions, save_questions
     svc = _service(a)
-    qs = generate_questions(svc.store, a.per_type, a.seed)
-    rep = run_agent_eval(svc.agent, qs)
-    save_report(rep, _paths(a).eval / "agent_report.json")
-    print(json.dumps({"overall": rep["overall"], "by_type": rep["by_type"]}, indent=1))
+    paths = _paths(a)
+    golden = Path(a.golden) if a.golden else None
+    if golden and golden.exists():
+        qs = load_questions(golden)                      # a frozen golden set: later runs are compared on exactly the same questions
+    else:
+        qs = generate_questions(svc.store, a.per_type, a.seed)
+        if golden:
+            save_questions(qs, golden)
+    runner = _engine(a, svc) if a.engine else svc.agent
+    rep = run_agent_eval(runner, qs)
+    out = paths.eval / ("engine_report.json" if a.engine else "agent_report.json")
+    save_report(rep, out)
+    print(json.dumps({"overall": {k: v for k, v in rep["overall"].items()}, "by_type": rep["by_type"]}, indent=1))
+    if a.baseline:
+        from .evalkit.regression import compare_reports
+        res = compare_reports(json.loads(Path(a.baseline).read_text(encoding="utf-8")), rep)
+        print(res.summary())
+        if not res.ok:
+            sys.exit(1)
+
+
+def cmd_eval_compare(a):
+    from .evalkit.regression import compare_reports
+    res = compare_reports(json.loads(Path(a.baseline).read_text(encoding="utf-8")), json.loads(Path(a.current).read_text(encoding="utf-8")),
+                          a.tol_quality, a.tol_cost)
+    print(res.summary())
+    sys.exit(0 if res.ok else 1)
+
+
+def cmd_mcp_serve(a):
+    from .mcp.server import main as mcp_main
+    sys.exit(mcp_main(["--data", a.data] if a.data else ["--demo"]))
 
 
 def cmd_serve(a):
     import uvicorn
     from .api.app import create_app
-    uvicorn.run(create_app(_service(a)), host=a.host, port=a.port)
+    svc = _service(a)
+    uvicorn.run(create_app(svc, _engine(a, svc)), host=a.host, port=a.port)
 
 
 # ---------------------------------------------------------------------------------------------------- demo
@@ -314,9 +355,16 @@ def main(argv=None) -> int:
     s.add_argument("--max-examples", type=int, default=4000); s.add_argument("--device", default="auto")
     for name, fn in (("ask", cmd_ask), ("agent", cmd_agent)):
         s = add(name, fn); s.add_argument("question")
+    s = add("query", cmd_query); s.add_argument("question")
     s = add("eval-agent", cmd_eval_agent); s.add_argument("--per-type", type=int, default=10); s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--golden", default=None, help="load (or create) a frozen question set at this path")
+    s.add_argument("--engine", action="store_true", help="evaluate the full System-1 engine instead of the bare agent")
+    s.add_argument("--baseline", default=None, help="a saved report: fail (exit 1) if this run regresses against it")
+    s = add("eval-compare", cmd_eval_compare); s.add_argument("baseline"); s.add_argument("current")
+    s.add_argument("--tol-quality", type=float, default=0.02); s.add_argument("--tol-cost", type=float, default=0.25)
+    s = add("mcp-serve", cmd_mcp_serve)
     s = add("serve", cmd_serve); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8000)
-    for name in ("ask", "agent", "eval-agent", "serve"):
+    for name in ("ask", "agent", "query", "eval-agent", "serve"):
         sp = sub.choices[name]
         sp.add_argument("--llm", default="ollama:llama3.2:3b"); sp.add_argument("--encoder", default="tfidf")
     s = add("demo", cmd_demo); s.add_argument("--papers", type=int, default=600)

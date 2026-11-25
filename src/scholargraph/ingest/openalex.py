@@ -74,19 +74,33 @@ class BudgetExhausted(RuntimeError):
     """The API refused the request because the daily budget is used up; run the command again tomorrow."""
 
 
-def _request_params(spec: SliceSpec, cursor: str, api_key: Optional[str]) -> Dict[str, Any]:
-    params = {"filter": spec.filter_string(), "sort": "cited_by_count:desc", "per-page": PER_PAGE, "cursor": cursor, "select": SELECT}
+KEYLESS_MAX_WORKS = 10_000        # without a key OpenAlex only serves plain page numbers (page=1..50 of 200), i.e. the first 10,000 results
+
+
+class KeyRequired(RuntimeError):
+    """The request needs a free OpenAlex API key (cursor paging beyond the first 10,000 results)."""
+
+
+def _request_params(spec: SliceSpec, cursor: str, api_key: Optional[str], page: Optional[int] = None) -> Dict[str, Any]:
+    params = {"filter": spec.filter_string(), "sort": "cited_by_count:desc", "per-page": PER_PAGE, "select": SELECT}
+    if page is not None:
+        params["page"] = page                       # keyless mode
+    else:
+        params["cursor"] = cursor
     if api_key:
         params["api_key"] = api_key
     return params
 
 
-def fetch_page(client: httpx.Client, spec: SliceSpec, cursor: str, api_key: Optional[str], retries: int = 5) -> Dict[str, Any]:
+def fetch_page(client: httpx.Client, spec: SliceSpec, cursor: str, api_key: Optional[str], retries: int = 5, page: Optional[int] = None) -> Dict[str, Any]:
     delay = 2.0
     for attempt in range(retries):
-        r = client.get(API, params=_request_params(spec, cursor, api_key), timeout=60)
+        r = client.get(API, params=_request_params(spec, cursor, api_key, page), timeout=60)
         if r.status_code == 200:
             return r.json()
+        if r.status_code == 401 and "key" in r.text.lower():
+            raise KeyRequired("OpenAlex needs a free API key for this request. Get one at https://openalex.org/settings/api-key and set the "
+                              "environment variable OPENALEX_API_KEY (this program never asks for your e-mail address).")
         if r.status_code in (402, 403) or (r.status_code == 429 and "budget" in r.text.lower()):
             raise BudgetExhausted(f"OpenAlex refused the request ({r.status_code}): {r.text[:200]}")
         if r.status_code in (429, 500, 502, 503, 504):
@@ -109,12 +123,17 @@ def download(bronze_dir: Path, spec: Optional[SliceSpec] = None, api_key: Option
     if state.spec_filter and state.spec_filter != spec.filter_string():
         raise RuntimeError("the bronze folder was started with a different slice; use another data folder or delete bronze/")
     state.spec_filter = spec.filter_string()
+    keyless = not api_key
+    limit = min(spec.max_works, KEYLESS_MAX_WORKS) if keyless else spec.max_works
+    if keyless and spec.max_works > KEYLESS_MAX_WORKS:
+        log(f"no OPENALEX_API_KEY set: downloading at most {KEYLESS_MAX_WORKS:,} works with page numbers "
+            "(a free key from https://openalex.org/settings/api-key unlocks cursor paging for larger slices)")
     own_client = client is None
     client = client or httpx.Client(headers={"User-Agent": "scholargraph-research-pipeline"})
     try:
-        while not state.done and state.works < spec.max_works:
+        while not state.done and state.works < limit:
             try:
-                page = fetch_page(client, spec, state.cursor or "*", api_key)
+                page = fetch_page(client, spec, state.cursor or "*", api_key, page=(state.pages + 1) if keyless else None)
             except BudgetExhausted as e:
                 log(f"budget exhausted after {state.works} works: {e}\nRun the same command again later; it resumes from the checkpoint.")
                 break
@@ -122,13 +141,15 @@ def download(bronze_dir: Path, spec: Optional[SliceSpec] = None, api_key: Option
             if not results:
                 state.done = True
                 break
-            room = spec.max_works - state.works
+            room = limit - state.works
             results = results[:room]
             state.pages += 1
             write_bronze_page(bronze_dir, state.pages, results)
             state.works += len(results)
             state.cursor = (page.get("meta") or {}).get("next_cursor")
-            if not state.cursor:
+            if not keyless and not state.cursor:
+                state.done = True
+            if keyless and len(results) < PER_PAGE:
                 state.done = True
             state.save(state_path)                      # checkpoint after every page
             if state.pages % 10 == 0:

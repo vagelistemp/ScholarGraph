@@ -75,7 +75,7 @@ class AgentRequest(BaseModel):
     question: str = Field(min_length=3, max_length=1000)
 
 
-def create_app(service: Service) -> FastAPI:
+def create_app(service: Service, engine=None) -> FastAPI:
     app = FastAPI(title="ScholarGraph", version="0.1.0")
     metrics = Metrics()
 
@@ -136,8 +136,21 @@ def create_app(service: Service) -> FastAPI:
         return {"answer": r.answer, "items": r.items, "finished": r.finished, "seconds": round(r.seconds, 3), "usage": r.usage,
                 "steps": [{"tool": s.tool, "args": s.args, "observation": s.observation, "error": s.error} for s in r.steps]}
 
+    @app.post("/query")
+    def query(req: AgentRequest):
+        """The full System-1 / System-2 pipeline: safety -> cache -> direct handlers -> intent classifier -> RAG or agent -> verifier."""
+        if engine is None:
+            raise HTTPException(501, "the query engine is not configured on this server")
+        r = engine.answer(req.question)
+        return {"answer": r.answer, "items": r.items, "route": r.route, "verified": r.verified, "seconds": round(r.seconds, 4),
+                "llm_calls": r.llm_calls, "flags": r.flags}
+
     @app.get("/metrics", response_class=PlainTextResponse)
     def prometheus():
-        return metrics.render(getattr(service.llm, "usage", None))
+        text = metrics.render(getattr(service.llm, "usage", None))
+        if engine is not None:
+            text += "# TYPE scholargraph_route_total counter\n" + "".join(
+                f'scholargraph_route_total{{route="{k}"}} {v}\n' for k, v in sorted(engine.route_counts.items()))
+        return text
 
     return app
