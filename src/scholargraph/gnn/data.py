@@ -116,11 +116,17 @@ def sample_negatives(data: CitationData, src: np.ndarray, k: int, rng: np.random
 
 # ---------------------------------------------------------------------------------------------- hiding papers during training
 def hide_sources(train_edges: np.ndarray, frac: float, rng: np.random.Generator) -> Tuple[np.ndarray, np.ndarray]:
-    """Hide all outgoing edges of a random ``frac`` of the citing papers: (message edges, supervision edges)."""
+    """Hide a random ``frac`` of the citing papers: (message edges, supervision edges).
+
+    A hidden paper must look like a brand-new paper, which has **neither references nor citations** yet. So all its outgoing edges become
+    the supervision targets, and its *incoming* edges (later papers citing it) are removed from the message graph too. Hiding only the
+    outgoing edges (an earlier version of this function) left hidden papers with citers, information a new paper never has; the model
+    learned to rely on it and validation performance collapsed (found on the first real-data run)."""
     srcs = np.unique(train_edges[:, 0])
     hidden = rng.choice(srcs, size=max(1, int(round(frac * len(srcs)))), replace=False)
-    mask = np.isin(train_edges[:, 0], hidden)
-    return train_edges[~mask], train_edges[mask]
+    out_mask = np.isin(train_edges[:, 0], hidden)
+    in_mask = np.isin(train_edges[:, 1], hidden)
+    return train_edges[~(out_mask | in_mask)], train_edges[out_mask]
 
 
 # ---------------------------------------------------------------------------------------------- evaluation sets

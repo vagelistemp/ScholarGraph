@@ -74,12 +74,20 @@ class SAGEBlock(nn.Module):
 
 
 class CitationGNN(nn.Module):
-    def __init__(self, in_dim: int, text_dim: int, hidden: int = 128, layers: int = 2, dropout: float = 0.2):
+    """Graph encoder + pair scorer. The scorer also receives the **same hand-crafted pair features as the boosted-tree baseline** (text
+    cosine, year gap, candidate popularity, same topic) so that the network is a superset of the baseline: it can only add information from
+    the graph, never lose what simple features already give. (A first version without them failed to even match text cosine alone on real data.)"""
+
+    N_PAIR_FEATURES = 4
+
+    def __init__(self, in_dim: int, text_dim: int, hidden: int = 128, layers: int = 2, dropout: float = 0.2, topic: Optional[torch.Tensor] = None):
         super().__init__()
         self.text_dim = text_dim
+        self.register_buffer("topic", topic if topic is not None else torch.zeros(0, dtype=torch.long))
         self.inp = nn.Linear(in_dim, hidden)
         self.blocks = nn.ModuleList([SAGEBlock(hidden, dropout) for _ in range(layers)])
-        self.pair = nn.Sequential(nn.Linear(3 * hidden + 2, hidden), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden, 1))
+        self.pair = nn.Sequential(nn.Linear(3 * hidden + self.N_PAIR_FEATURES, hidden), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden, 1))
+        self.feat_gain = nn.Linear(self.N_PAIR_FEATURES, 1)          # a direct linear path from the hand features to the logit
 
     def encode(self, x: torch.Tensor, adj: Adjacency) -> torch.Tensor:
         h = torch.relu(self.inp(x))
@@ -88,9 +96,12 @@ class CitationGNN(nn.Module):
         return h
 
     def score(self, z: torch.Tensor, x: torch.Tensor, u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        cos = (x[u, :self.text_dim] * x[v, :self.text_dim]).sum(-1, keepdim=True)
-        gap = (x[u, self.text_dim:self.text_dim + 1] - x[v, self.text_dim:self.text_dim + 1])     # scaled year difference
-        return self.pair(torch.cat([z[u], z[v], z[u] * z[v], cos, gap], dim=-1)).squeeze(-1)
+        cos = (x[u, :self.text_dim] * x[v, :self.text_dim]).sum(-1, keepdim=True) * 5.0                 # cosines are small: rescale
+        gap = (x[u, self.text_dim:self.text_dim + 1] - x[v, self.text_dim:self.text_dim + 1])           # scaled year difference
+        pop = x[v, self.text_dim + 1:self.text_dim + 2]                                                  # log in-degree of the candidate
+        same = (self.topic[u] == self.topic[v]).float().unsqueeze(-1) if len(self.topic) else torch.zeros_like(cos)
+        feats = torch.cat([cos, gap, pop, same], dim=-1)
+        return (self.pair(torch.cat([z[u], z[v], z[u] * z[v], feats], dim=-1)) + self.feat_gain(feats)).squeeze(-1)
 
 
 def count_parameters(model: nn.Module) -> int:

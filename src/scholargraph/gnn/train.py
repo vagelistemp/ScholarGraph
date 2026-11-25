@@ -27,7 +27,8 @@ class TrainConfig:
     hide_frac: float = 0.2            # share of training papers hidden each epoch (their references are the supervision targets)
     neg_per_pos: int = 1
     hard_frac: float = 0.5            # share of training negatives drawn from the source paper's own topic
-    batch_pairs: int = 200_000
+    batch_pairs: int = 4096           # supervision pairs per optimizer step
+    steps_per_epoch: int = 30         # optimizer steps per epoch (each re-encodes the graph); one giant batch per epoch means far too few updates
     patience: int = 6
     max_eval_pairs: int = 20_000
     k_neg: int = 99
@@ -83,13 +84,13 @@ def train_gnn(data: CitationData, cfg: Optional[TrainConfig] = None, log: Callab
     test_adj = Adjacency(np.vstack([split["train"], split["val"]]), data.n, device)       # test sees train + val edges
 
     in_dim = data.text.shape[1] + 3
-    model = CitationGNN(in_dim, data.text.shape[1], cfg.hidden, cfg.layers, cfg.dropout).to(device)
+    model = CitationGNN(in_dim, data.text.shape[1], cfg.hidden, cfg.layers, cfg.dropout, torch.as_tensor(data.topic)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     bce = nn.BCEWithLogitsLoss()
     log(f"device {device}; {count_parameters(model):,} parameters; train/val/test edges "
         f"{len(split['train']):,}/{len(split['val']):,}/{len(split['test']):,}")
     if tracker:
-        tracker.params(**asdict(cfg), device=device)
+        tracker.params(**{**asdict(cfg), "device": device})            # the resolved device replaces the "auto" in the config
 
     history, best, best_state, best_epoch, bad = [], -1.0, None, 0, 0
     t0 = time.time()
@@ -100,7 +101,7 @@ def train_gnn(data: CitationData, cfg: Optional[TrainConfig] = None, log: Callab
         x = node_features(data, adj, device)
         order = rng.permutation(len(sup))
         losses = []
-        for i in range(0, len(order), cfg.batch_pairs):
+        for i in range(0, min(len(order), cfg.batch_pairs * cfg.steps_per_epoch), cfg.batch_pairs):
             pos = sup[order[i:i + cfg.batch_pairs]]
             neg_v = sample_negatives(data, pos[:, 0], cfg.neg_per_pos, rng, forbidden, cfg.hard_frac)
             u = torch.as_tensor(np.concatenate([pos[:, 0], np.repeat(pos[:, 0], cfg.neg_per_pos)]), device=device)

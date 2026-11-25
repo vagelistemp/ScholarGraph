@@ -34,13 +34,17 @@ class SplitTest(Fixture):
         """The property the whole protocol rests on (compare the spy-builder test of the earlier project)."""
         rng = np.random.default_rng(0)
         msg, sup = hide_sources(self.split["train"], 0.2, rng)
-        self.assertEqual(len(msg) + len(sup), len(self.split["train"]))
+        hidden = set(np.unique(sup[:, 0]).tolist())
+        dropped = len(self.split["train"]) - len(msg) - len(sup)                 # incoming edges of hidden papers (from non-hidden papers)
+        self.assertGreaterEqual(dropped, 0)
+        self.assertTrue(set(msg[:, 1].tolist()).isdisjoint(hidden))               # nobody in the message graph cites a hidden paper
         mc = set((msg[:, 0] * self.data.n + msg[:, 1]).tolist())
         sc = set((sup[:, 0] * self.data.n + sup[:, 1]).tolist())
         self.assertFalse(mc & sc)                                           # no supervision edge inside the message graph
         self.assertFalse(set(sup[:, 0].tolist()) & set(msg[:, 0].tolist()))   # hidden papers keep NO outgoing edge
         adj = Adjacency(msg, self.data.n)
         self.assertTrue((adj.out_deg[np.unique(sup[:, 0])] == 0).all())
+        self.assertTrue((adj.in_deg[np.unique(sup[:, 0])] == 0).all())            # a hidden paper is isolated, like a brand-new paper
 
     def test_test_edges_never_enter_training_or_validation_graphs(self):
         s = self.split
@@ -106,11 +110,27 @@ class ModelTest(Fixture):
         self.assertTrue(all(p.grad is not None for p in m.parameters()))
 
     def test_training_beats_chance_on_the_test_years(self):
-        cfg = TrainConfig(epochs=12, hidden=32, k_neg=49, max_eval_pairs=400, batch_pairs=100_000, device="cpu", patience=4, seed=0)
+        cfg = TrainConfig(epochs=12, hidden=32, k_neg=49, max_eval_pairs=400, batch_pairs=100_000, steps_per_epoch=1, device="cpu", patience=4, seed=0)
         res = train_gnn(self.data, cfg, log=lambda *a: None)
         self.assertGreater(res.test["auc"], 0.7)
         self.assertGreater(res.test["hits@10"], 0.35)                           # chance with 50 candidates is 0.20
         self.assertGreater(res.history[0]["loss"], res.history[-1]["loss"] - 0.2)
+
+
+class TrackerIntegrationTest(Fixture):
+    def test_training_with_an_experiment_tracker_logs_params_metrics_and_summary(self):
+        """Found by the first real-data run: the tracker call crashed because the config's 'device' was passed twice."""
+        import json
+        import tempfile
+        from pathlib import Path
+        from scholargraph.common import Tracker
+        with tempfile.TemporaryDirectory() as d:
+            tr = Tracker("gnn", "test", Path(d), use_mlflow=False)
+            train_gnn(self.data, TrainConfig(epochs=2, hidden=16, k_neg=9, max_eval_pairs=50, device="cpu"), log=lambda *a: None, tracker=tr)
+            kinds = [json.loads(l)["kind"] for l in tr.path.read_text().splitlines()]
+        self.assertEqual(kinds[0], "params")
+        self.assertEqual(kinds.count("metrics"), 2)
+        self.assertEqual(kinds[-1], "summary")
 
 
 class BaselineTest(Fixture):
