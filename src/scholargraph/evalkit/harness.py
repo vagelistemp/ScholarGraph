@@ -94,7 +94,7 @@ def run_agent_eval(agent: Agent, questions: Sequence[Question], log: Callable[[s
                "p50_seconds": float(np.percentile([r.seconds for r in rows], 50)), "p95_seconds": float(np.percentile([r.seconds for r in rows], 95)),
                "tokens_per_question": float(sum(r.prompt_tokens + r.completion_tokens for r in rows) / len(rows)),
                "llm_calls_per_question": float(np.mean([r.llm_calls for r in rows])),
-               "handled_without_llm": float(np.mean([r.llm_calls == 0 for r in rows])),
+               "handled_without_llm": float(np.mean([r.route in ("cache", "handler", "refused", "off_topic") for r in rows])),      # by route: a crashed agent run is NOT "handled without a model"
                "n_agentic": len(agentic_rows),
                "trajectory_precision": float(np.mean([r.precision for r in agentic_rows])) if agentic_rows else 0.0,
                "efficiency": float(np.mean([r.efficiency for r in agentic_rows])) if agentic_rows else 0.0,

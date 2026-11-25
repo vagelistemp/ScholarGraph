@@ -4,7 +4,7 @@
 - **What it is.** An end-to-end system that turns a large open bibliographic dataset (OpenAlex, about 300,000 papers on artificial intelligence, 2015 to 2025) into a **knowledge graph** of papers, authors, institutions, venues, topics and scientific concepts, and builds four machine-learning components on top of it: a citation-prediction **graph neural network**, a **fine-tuned embedding model**, a **fine-tuned small language model** for concept extraction, and a **GraphRAG question-answering agent** with guardrails, evaluation and an HTTP API.
 - **Why it exists.** To practise, in one coherent system rather than five disconnected demos, the skills that applied AI roles ask for: data engineering at scale (Spark, Delta Lake), graph data modelling, deep learning in PyTorch, fine-tuning (contrastive learning and LoRA), retrieval-augmented generation, tool-using agents, and the engineering around them (tests, evaluation, serving, honest reporting).
 - **How it is built.** Five phases with one data contract between them (the *gold* Parquet tables). Each phase is a Python sub-package with its own unit tests; everything runs on a laptop for small data and on a free Colab GPU or an Apple Silicon Mac for the full slice.
-- **Status.** Phases 1 to 5 are implemented and unit-tested (85 tests). The full-scale run on the real OpenAlex slice has **not yet been executed**; this document states what will be measured, and the Implementation Guide reports measured results only after that run.
+- **Status.** Phases 1 to 5 and the 5b layer are implemented and unit-tested (226 tests). A first run on **10,000 real papers** (CPU, no API key) has been done and is reported with its caveats in the Implementation Guide; the full-scale run on the 300,000-paper slice, neural encoders, fine-tuning and stronger language models are **pending**.
 :::
 
 # 1. Motivation
@@ -51,9 +51,9 @@ The data comes from **OpenAlex** (openalex.org), an open catalogue of scholarly 
 
 - subfield **Artificial Intelligence** (OpenAlex subfield 1702), years **2015 to 2025**, types article and preprint, English, abstract present;
 - the **300,000 most cited** works of that filter (the default; the filter matches about 468,000), which gives a dense citation core: highly cited papers cite one another far more often than a random sample would;
-- about **1 to 2 GB** of compressed raw pages, well inside the 10 GB budget.
+- about **0.7 GB** of compressed raw pages (measured: 10,000 works take 24 MB), well inside the 10 GB budget.
 
-OpenAlex meters API usage in dollars per day (a list page costs about $0.0001). Downloading 300,000 works takes about 1,500 pages, a fraction of a cent, but anonymous access shares a very small daily budget. The downloader therefore **checkpoints after every page** and resumes where it stopped, and it reads an optional free personal key from the environment variable `OPENALEX_API_KEY`. The key is never stored in the repository and the program never asks for, stores or transmits an e-mail address.
+OpenAlex meters API usage in dollars per day (a list page costs about $0.0001). Without a key the API serves plain page numbers only up to the first **10,000 results**; larger slices need cursor paging, which **requires a free personal key** (obtained by you at openalex.org/settings/api-key and passed in the environment variable `OPENALEX_API_KEY`). The downloader runs in either mode, **checkpoints after every page** and resumes where it stopped. The key is never stored in the repository, and the program never asks for, stores or transmits an e-mail address.
 
 A synthetic generator of OpenAlex-format records (with planted topics, concept phrases, author communities, preferential attachment and a few deliberate data errors) supplies the tests and the demo; four real records saved from the API form a format-fidelity fixture.
 
@@ -99,8 +99,9 @@ A deployment phase is planned but intentionally not part of this implementation:
 
 | Component | Implemented | Unit-tested | Full run on real data |
 |---|---|---|---|
-| Phase 1 lakehouse | yes | yes (Spark equals pandas, verified in a Linux container) | pending |
-| Phase 2 graph, concepts | yes | yes (Neo4j loader against a recording driver) | pending; live Neo4j check pending |
-| Phase 3 GNN and baseline | yes | yes | pending |
+| Phase 1 lakehouse | yes | yes (Spark equals pandas, verified in a Linux container) | 10,000-paper slice done; full slice pending |
+| Phase 2 graph, concepts | yes | yes (live Neo4j parity test passed) | rule-based concepts on the 10,000-paper slice done; LLM extraction pending |
+| Phase 3 GNN and baseline | yes | yes | 10,000-paper slice done (3 seeds); full slice pending |
 | Phase 4 fine-tuning | yes | yes (wiring, leakage, retrieval metrics) | pending (needs a GPU or the Mac) |
-| Phase 5 GraphRAG, agent, API, evaluation | yes | yes | pending (needs a local or hosted LLM) |
+| Phase 5 GraphRAG, agent, API, evaluation | yes | yes | retrieval benchmark and System 1 on the 10,000-paper slice done; stronger-model evaluation pending |
+| Phase 5b reliability and advanced agents | yes | yes (real MCP subprocess, live Neo4j) | System 1 measured on the real graph; the rest depends on a language model |

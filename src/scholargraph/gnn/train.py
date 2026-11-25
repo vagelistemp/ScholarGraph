@@ -32,7 +32,8 @@ class TrainConfig:
     patience: int = 20                # validation MRR can dip before a long climb (seen on real data); a short patience stops far too early
     max_eval_pairs: int = 20_000
     k_neg: int = 99
-    seed: int = 0
+    seed: int = 0                     # training randomness (initialisation, hidden papers, negatives)
+    eval_seed: int = 0                # draws the validation and test candidates: fixed, so every seed and the baseline are scored on the same pairs
     device: str = "auto"
     select_metric: str = "mrr"
 
@@ -78,8 +79,8 @@ def train_gnn(data: CitationData, cfg: Optional[TrainConfig] = None, log: Callab
     if min(len(split["train"]), len(split["val"]), len(split["test"])) == 0:
         raise ValueError("the temporal split has an empty part; check train_end / val_year against the data's years")
     forbidden = data.all_pairs_codes()
-    val_set = make_eval_set(data, split["val"], cfg.k_neg, cfg.max_eval_pairs, seed=cfg.seed + 1)
-    test_set = make_eval_set(data, split["test"], cfg.k_neg, cfg.max_eval_pairs, seed=cfg.seed + 2)
+    val_set = make_eval_set(data, split["val"], cfg.k_neg, cfg.max_eval_pairs, seed=cfg.eval_seed + 1)
+    test_set = make_eval_set(data, split["test"], cfg.k_neg, cfg.max_eval_pairs, seed=cfg.eval_seed + 2)
     val_adj = Adjacency(split["train"], data.n, device)                                   # validate on the past graph only
     test_adj = Adjacency(np.vstack([split["train"], split["val"]]), data.n, device)       # test sees train + val edges
 

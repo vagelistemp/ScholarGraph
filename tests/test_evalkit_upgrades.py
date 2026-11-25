@@ -69,6 +69,15 @@ class RegressionTest(unittest.TestCase):
         self.assertEqual(o["routes"], {"agent": len(self.questions)})
         self.assertGreater(o["tokens_per_question"], 0)
 
+    def test_a_crashed_agent_run_is_not_counted_as_handled_without_a_model(self):
+        """Found by the real small-model run: a run that crashed reports zero model calls, which used to look like 'no model needed'."""
+        class Boom:
+            def run(self, question):
+                raise TimeoutError("model timed out")
+        rep = run_agent_eval(Boom(), self.questions[:3], log=lambda *a: None)
+        self.assertEqual(rep["overall"]["handled_without_llm"], 0.0)
+        self.assertEqual(rep["overall"]["finished"], 0.0)
+
     def test_identical_reports_do_not_regress(self):
         r = compare_reports(self.report, copy.deepcopy(self.report))
         self.assertTrue(r.ok, r.summary())

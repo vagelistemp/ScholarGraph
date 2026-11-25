@@ -122,8 +122,8 @@ def cmd_baseline(a):
     p = _paths(a)
     data = _citation_data(a, p)
     sp = data.split()
-    out = run_baseline(data, make_eval_set(data, sp["val"], 99, a.max_eval, 1), make_eval_set(data, sp["test"], 99, a.max_eval, 2))
-    _save(out, p.models / "baseline_results.json")
+    out = run_baseline(data, make_eval_set(data, sp["val"], 99, a.max_eval, 1), make_eval_set(data, sp["test"], 99, a.max_eval, 2), seed=a.seed)
+    _save(out, p.models / ("baseline_results.json" if a.seed == 0 else f"baseline_results_seed{a.seed}.json"))
 
 
 def cmd_train_gnn(a):

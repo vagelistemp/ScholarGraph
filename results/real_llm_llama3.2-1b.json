@@ -1,0 +1,107 @@
+{
+ "model": "llama3.2:1b",
+ "questions": 7,
+ "types": [
+  "author_of",
+  "cites_count",
+  "co_cited",
+  "coauthor",
+  "concept_year",
+  "references_of",
+  "top_cited_year"
+ ],
+ "agent_schema_constrained": {
+  "n": 7,
+  "exact": 0.0,
+  "f1": 0.0,
+  "tool_ok": 0.0,
+  "finished": 0.5714285714285714,
+  "mean_steps": 0.5714285714285714,
+  "mean_seconds": 8.49446518080575,
+  "p95_seconds": 25.128175354003893,
+  "llm_calls_per_question": 1.1428571428571428,
+  "handled_without_llm": 0.0,
+  "error_steps_per_question": 0.0,
+  "tokens_per_question": 699.1428571428571,
+  "wall_seconds": 154.3,
+  "by_type_exact": {
+   "author_of": 0.0,
+   "cites_count": 0.0,
+   "co_cited": 0.0,
+   "coauthor": 0.0,
+   "concept_year": 0.0,
+   "references_of": 0.0,
+   "top_cited_year": 0.0
+  }
+ },
+ "agent_with_grounding_hook": {
+  "n": 7,
+  "exact": 0.0,
+  "f1": 0.0,
+  "tool_ok": 0.0,
+  "finished": 0.42857142857142855,
+  "mean_steps": 0.7142857142857143,
+  "mean_seconds": 8.561949150902885,
+  "p95_seconds": 30.66421389579771,
+  "llm_calls_per_question": 1.1428571428571428,
+  "handled_without_llm": 0.0,
+  "error_steps_per_question": 0.14285714285714285,
+  "tokens_per_question": 711.2857142857143,
+  "wall_seconds": 231.3,
+  "by_type_exact": {
+   "author_of": 0.0,
+   "cites_count": 0.0,
+   "co_cited": 0.0,
+   "coauthor": 0.0,
+   "concept_year": 0.0,
+   "references_of": 0.0,
+   "top_cited_year": 0.0
+  }
+ },
+ "engine_system1": {
+  "n": 7,
+  "exact": 1.0,
+  "f1": 1.0,
+  "tool_ok": 1.0,
+  "finished": 1.0,
+  "mean_steps": 0.0,
+  "mean_seconds": 0.012376512799944197,
+  "p95_seconds": 0.027275204658508294,
+  "llm_calls_per_question": 0.0,
+  "handled_without_llm": 1.0,
+  "error_steps_per_question": 0.0,
+  "tokens_per_question": 0.0,
+  "wall_seconds": 0.1,
+  "by_type_exact": {
+   "author_of": 1.0,
+   "cites_count": 1.0,
+   "co_cited": 1.0,
+   "coauthor": 1.0,
+   "concept_year": 1.0,
+   "references_of": 1.0,
+   "top_cited_year": 1.0
+  }
+ },
+ "rag": [
+  {
+   "question": "What are the main approaches to link prediction?",
+   "seconds": 44.4,
+   "n_sources": 5,
+   "answer": "The main approaches to link prediction are:\n\n1. **Knowledge Graph Embedding**: This approach embeds entities and relations into continuous vector spaces, preserving their inherent structure. Techniques such as RotatE and KG-embedding model are mentioned in [P2], [P3], and [P4].\n2. **Self-Adversarial",
+   "guardrails_ok": true,
+   "groundedness": 0.707,
+   "invalid_citations": [],
+   "has_citation": true
+  },
+  {
+   "question": "Which methods are used for question answering?",
+   "seconds": 64.6,
+   "n_sources": 5,
+   "answer": "The methods used for question answering are:\n\n1. Learning to Retrieve Reasoning Paths over Wikipedia Graph (Akari Asai et al., 2019) - a graph-based recurrent retrieval approach\n2. MS MARCO: A Human Generated Machine Reading Comprehension Dataset (Nick Craswell et al., 2016) - a large-scale machine ",
+   "guardrails_ok": false,
+   "groundedness": 0.76,
+   "invalid_citations": [],
+   "has_citation": false
+  }
+ ]
+}

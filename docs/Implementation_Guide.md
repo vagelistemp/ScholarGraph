@@ -1,9 +1,9 @@
 % ScholarGraph: Implementation Guide | How the system is built, how it is tested, and what is still to be measured | Evangelos Tempelopoulos  ·  package scholargraph (Python, Spark, PyTorch)  ·  companion document: Project Scope and Aims
 
 :::note Summary
-- **Size.** 79 Python files (about 7,400 lines) and 224 tests (about 2,750 lines) across five phases. The tests run in a few minutes on a laptop; the Spark test skips on native Windows and passes in the provided Linux container; the live Neo4j test runs when a server is available (it passed).
+- **Size.** 79 Python files (about 7,400 lines) and 226 tests (about 2,750 lines) across five phases. The tests run in a few minutes on a laptop; the Spark test skips on native Windows and passes in the provided Linux container; the live Neo4j test runs when a server is available (it passed).
 - **Verified so far.** (1) The Spark and pandas pipelines produce **identical** gold tables on the same input, verified inside a Linux container with Spark 4.0 and Delta Lake. (2) The agent machinery scores 100% on 35 graph-derived questions when driven by a scripted policy, which validates the tools, the JSON protocol, the question generator and the scoring. (3) The temporal-split and no-leakage properties hold (tested directly). (4) An end-to-end synthetic demo runs through all five phases.
-- **Not yet measured.** No result on the real OpenAlex slice exists yet: the full run needs a GPU or a faster machine and a language model. This guide therefore reports **design and verification**, and marks every real-data result as pending.
+- **Measured on real data so far.** A first run on 10,000 real papers (CPU only, no language model for most parts): the lakehouse, citation prediction (baselines and a GNN over three seeds), a retrieval benchmark and the System 1 engine (section 11.2), plus a small check with a 1-billion-parameter local model. The full 300,000-paper run, neural encoders, fine-tuning and stronger models are **pending** and marked as such. All real-data numbers come from a small slice of highly cited papers and are preliminary.
 :::
 
 # 1. Repository layout
@@ -50,7 +50,7 @@ The `cited_by_count` column comes from OpenAlex and **includes citations from th
 
 ![Medallion architecture](medallion.png|600)
 
-**Download.** `ingest/openalex.py` pages through the API with a cursor, sorted by citation count, filtered to the slice. Every page is written atomically (temporary file, then rename) as gzip JSON lines; `_state.json` stores the cursor and counters after each page, so the program can be stopped at any time and resumed, also on another day if the daily budget runs out. Retries use exponential back-off; refusals caused by the budget raise `BudgetExhausted` and end the run cleanly. **Bronze** is the API's JSON exactly as received for the selected fields; nothing is altered.
+**Download.** `ingest/openalex.py` pages through the API sorted by citation count and filtered to the slice. **With an API key** it uses cursor paging; **without a key** OpenAlex only serves plain page numbers up to the first 10,000 results (found on the first real run: the cursor requires a free key), so the downloader switches to page mode and stops at 10,000 works, telling the user how to unlock more. Both modes are tested against a mock server. Every page is written atomically (temporary file, then rename) as gzip JSON lines; `_state.json` stores the cursor and counters after each page, so the program can be stopped at any time and resumed, also on another day if the daily budget runs out. Retries use exponential back-off; refusals caused by the budget raise `BudgetExhausted` and end the run cleanly. **Bronze** is the API's JSON exactly as received for the selected fields; nothing is altered.
 
 **Parsing.** `ingest/transform.py` is plain Python: it reconstructs abstracts from OpenAlex's inverted index, strips identifier prefixes, flattens authorships (author, position, first institution), topics, keywords and references, and applies the usability rule (title present, abstract of at least 40 characters, year in range). Because it has no dependencies it is unit-tested directly, including on four real records saved from the API.
 
@@ -72,13 +72,13 @@ The `cited_by_count` column comes from OpenAlex and **includes citations from th
 
 **Task.** For a new paper, rank the older papers it cites. This is a cold-start problem: the new paper has no outgoing edges in the graph the model sees.
 
-**Protocol (gnn/data.py).** Edges are split by the citing paper's year. Negatives for a source paper u are papers that existed at u's date (year no later), are not u, and are not real citations of u; half of the training negatives come from u's topic. Each epoch hides a random 20% of the training papers: **all** their outgoing edges leave the message graph and become the supervision targets, so the hidden papers look like the test papers. Tests verify that the split is temporal and disjoint, that hidden papers have no outgoing edge in the message graph, that no test edge appears in any training or validation graph, and that negatives obey all constraints.
+**Protocol (gnn/data.py).** Edges are split by the citing paper's year. Negatives for a source paper u are papers that existed at u's date (year no later), are not u, and are not real citations of u; half of the training negatives come from u's topic. Each epoch hides a random 20% of the training papers: **all** their outgoing edges become the supervision targets and are removed from the message graph, and so are their **incoming** edges (later papers citing them), because a brand-new test paper has neither references nor citers; keeping the incoming edges (an earlier version) leaked the future and collapsed validation performance. Each epoch makes 30 optimizer steps (smaller batches; one giant batch gave only about a dozen updates in total) and early stopping waits 20 epochs because validation MRR can dip before a long climb. Tests verify that the split is temporal and disjoint, that hidden papers are isolated (no outgoing and no incoming edge) in the message graph, that no test edge appears in any training or validation graph, and that negatives obey all constraints.
 
 ![Message passing](gnn_message.png|600)
 
-**Model (gnn/model.py).** A directed GraphSAGE-style network in plain PyTorch (no PyTorch Geometric dependency): each layer combines a paper's own vector with the mean over the papers it cites and the mean over the papers that cite it, with layer normalisation and a residual connection. Node inputs are the text embedding, the scaled year and the log in- and out-degree of the message graph. A pair is scored by an MLP over the two vectors, their product, the text cosine and the year gap. Sparse aggregation runs on the CPU when the device is Apple's `mps`, which lacks some sparse operations; the transfers are differentiable.
+**Model (gnn/model.py).** A directed GraphSAGE-style network in plain PyTorch (no PyTorch Geometric dependency): each layer combines a paper's own vector with the mean over the papers it cites and the mean over the papers that cite it, with layer normalisation and a residual connection. Node inputs are the text embedding, the scaled year and the log in- and out-degree of the message graph. A pair is scored by an MLP over the two vectors, their product and four hand-made pair features (text cosine, year gap, candidate popularity, same topic), plus a direct linear path from those features to the logit: the network is a superset of the baseline, so its gain measures what the graph adds. (A first version without the features failed to match text cosine alone.) Sparse aggregation runs on the CPU when the device is Apple's `mps`, which lacks some sparse operations; the transfers are differentiable.
 
-**Baseline (gnn/baseline.py).** Eight pair features (text cosine, candidate popularity, year gap, same topic, same venue, shared authors, an author-citation prior and its normalised form) feed a boosted-tree classifier trained on the same pairs with the same hidden-paper protocol, and are evaluated on the same candidates. Three single-feature heuristics (popularity, text cosine, author prior) are reported alongside.
+**Baseline (gnn/baseline.py).** Eight pair features (text cosine, candidate popularity, year gap, same topic, same venue, shared authors, an author-citation prior and its normalised form) feed a boosted-tree classifier trained on the same pairs with the same hidden-paper protocol, and are evaluated on the same candidate sets (the evaluation seed is fixed and independent of the training seed). Three single-feature heuristics (popularity, text cosine, author prior) are reported alongside.
 
 **Metrics (gnn/metrics.py).** Hits@k and MRR over 100 candidates, and AUC / AP against one random negative; ties are broken by the mean rank so that a constant scorer cannot look good (tested).
 
@@ -152,16 +152,16 @@ This layer wraps the Phase 5 agent in the engineering that makes a language-mode
 | test_embeddings | 5 | embedding cache reused only for the same texts and encoder, rejected on reordering, unit-length vectors |
 | test_structured | 8 | schema validator, repair loop, provider request bodies for constrained decoding |
 | test_hooks_observability | 18 | hook ordering and isolation, budgets, allow-list, approval, redaction, loop guard, final-answer rejection, parallel tool calls, nested spans, OpenTelemetry bridge |
-| test_evalkit_upgrades | 10 | trajectory metrics by hand, regression comparison, golden-set round trip |
+| test_evalkit_upgrades | 11 | trajectory metrics by hand, regression comparison, golden-set round trip |
 | test_system1 | 21 | safety, cache (TTL, LRU, semantic guards), direct handlers vs the graph, classifier generalisation (lexical and semantic), verifier, engine routes, harness integration |
 | test_api_query | 4 | the `/query` endpoint, route counters in the metrics |
 | test_multi_agent | 10 | plans, waves, restricted specialists, grounding hook, repair and drop of unsupported items, parallel subtasks |
 | test_memory | 16 | scoring and decay, merge, eviction, expiry, trust, poisoning attempts, user commands, cross-session recall, working memory |
-| test_retrieval_upgrades | 17 | rerankers, MaxSim, query rewriting, multi-query fusion, contextual text, retrieval benchmark, communities, global answers, multi-hop paths |
+| test_retrieval_upgrades | 18 | rerankers, MaxSim, query rewriting, multi-query fusion, contextual text, retrieval benchmark, communities, global answers, multi-hop paths |
 | test_mcp | 9 | handshake, schemas, call results, error codes, stdio loop, real subprocess integration |
 | test_efficiency_learning | 13 | cache, cascade, truncation, memory estimate, benchmark, DPO loss by hand, preference pairs from traces, DPO training |
 
-224 tests in total (218 run on a machine without Neo4j; the Spark equivalence test also needs Linux or Docker).
+226 tests in total (219 run on a machine without Neo4j; the Spark equivalence test also needs Linux or Docker).
 
 Run all with `python -m unittest discover -s tests -t .`.
 
@@ -170,7 +170,7 @@ Run all with `python -m unittest discover -s tests -t .`.
 ```
 pip install -e ".[dl,serve,baseline]"      # add ",spark" on Linux or in the container, ",graph" for Neo4j
 python -m scholargraph demo                # synthetic end-to-end run, a few minutes, no downloads
-export OPENALEX_API_KEY=...                # optional, from openalex.org/settings/api
+export OPENALEX_API_KEY=...                # a free key (openalex.org/settings/api-key) is REQUIRED beyond 10,000 works; without one the download stops at 10,000
 python -m scholargraph ingest              # resumable download of the slice (default 300,000 works)
 python -m scholargraph lake --engine pandas        # or: --engine spark (Linux, macOS or the container)
 python -m scholargraph concepts --extractor rules
@@ -204,10 +204,10 @@ These are measured results on a **small, highly cited slice** with TF-IDF text f
 | popularity of the candidate | 0.365 | 0.206 | 0.643 |
 | authors cited it before | 0.134 | 0.125 | 0.563 |
 | text cosine (TF-IDF + SVD) alone | 0.698 | 0.405 | 0.883 |
-| boosted trees on eight hand-made features (one run) | 0.703 | 0.385 | 0.908 |
-| graph neural network, mean of 3 seeds (standard deviation) | **0.760** (0.007) | **0.458** (0.017) | **0.923** (0.001) |
+| boosted trees on eight hand-made features, mean of 3 seeds (standard deviation) | 0.700 (0.017) | 0.379 (0.012) | 0.906 (0.005) |
+| graph neural network, mean of 3 seeds (standard deviation) | **0.771** (0.005) | **0.471** (0.004) | **0.924** (0.001) |
 
-The GNN beats the strongest baseline consistently across seeds (training takes about 2 minutes on a CPU), but the margin is moderate and the baseline was run once, so its own variability is unknown. The GNN's pair scorer also receives the baseline's hand features, so its gain is what the graph adds on top of them. The development of this result exposed six problems that unit tests had missed (a leak through incoming citations of hidden papers, one optimizer step per epoch, a too-short early-stopping patience, among others); they are listed in the study notes and each now has a test.
+Honesty note: the test metrics were looked at during several rounds of debugging the GNN, so these estimates are somewhat optimistic; a fresh evaluation on the full slice with the settings frozen would be the clean test. The GNN beats the strongest baseline consistently across seeds (training takes about 2 minutes on a CPU), but the margin is moderate (hits@10 +0.07, MRR +0.09) and all methods are scored on the same evaluation pairs and each learned method was trained with three seeds. The GNN's pair scorer also receives the baseline's hand features, so its gain is what the graph adds on top of them. The development of this result exposed seven problems that unit tests had missed (a leak through incoming citations of hidden papers, one optimizer step per epoch, a too-short early-stopping patience, among others); they are listed in the study notes and each now has a test.
 
 **Retrieval.** 300 test-period papers are used as queries (title plus abstract); relevant documents are the papers they cite; the retrieval graph contains no test-period citations (a guard enforces it, see below). Dense retrieval here is TF-IDF + SVD, not a neural encoder:
 
@@ -222,9 +222,17 @@ The GNN beats the strongest baseline consistently across seeds (training takes a
 
 Fusion beats either list alone and the graph bonus adds a further clear gain. The simple lexical reranker **hurts** (it discards the first-stage signals), which is reported as measured; a real cross-encoder has not been run. A first version of this benchmark reported an MRR of 0.756 for the graph bonus. That number was a **leak**: the query paper is itself in the index, so its own text ranks it first and the graph bonus boosted its references, which are the answers. The benchmark now rejects any graph store that contains test-period citations (`BenchmarkLeak`) and a test shows the inflation.
 
-**System 1.** On 70 questions generated from the real graph (ten of each of the seven types) the engine answered all of them exactly, 69 through direct handlers and one from the cache, with **zero model calls** and a mean of 11 ms per question. The same questions through the agent, driven by the scripted policy (the cheapest possible stand-in for a model), need 2.9 model calls per question.
+**System 1.** On 70 questions generated from the real graph (ten of each of the seven types) the engine answered all of them exactly, 69 through direct handlers and one from the cache, with **zero model calls** and a mean of 11 ms per question. The same questions through the agent, driven by the scripted policy (the cheapest possible stand-in for a model), need 2.9 model calls per question. **Caveat:** the handlers' patterns were written for the phrasings the question generator emits, so this proves that the zero-model path and the plumbing work on real titles and authors; it does **not** measure how many of a real user's questions would be recognised (the classifier accuracies in section 8 are likewise measured on template questions).
 
-[[LLM]]
+**A real small language model (n = 7, CPU).** To see what the safeguards do with an actual model, one question of each of the seven types from the real graph was given to `llama3.2:1b` (a 1-billion-parameter model served by Ollama on this CPU machine):
+
+| Configuration | Exact answers | Finished | Mean time | Model calls per question |
+|---|---|---|---|---|
+| agent with schema-constrained decoding | 0 of 7 | 4 of 7 (the other 3 timed out or hit the step limit) | 8.5 s | 1.1 |
+| agent plus the grounding hook | 0 of 7 | 3 of 7 | 8.6 s | 1.1 |
+| full System 1 engine | **7 of 7** | 7 of 7 | **12 ms** | **0** |
+
+The 1B model **did not use its tools at all**: it answered straight away with confident, invented results (a made-up citation count of 0, a made-up "most cited paper"), so it never reached the stage where the tools and constrained decoding could help; the schema guaranteed valid JSON, not valid behaviour. The grounding hook correctly refused an answer whose items had never appeared in a tool result, but a model that never calls a tool cannot satisfy it. The engine answered every question exactly because those question families are handled by deterministic code (with the caveat above). For two open questions through the retrieval route the model needed 44 and 65 seconds per answer; the guardrails accepted the first (groundedness 0.71, valid citations) and flagged the second as having no citation marker. These are only seven questions and one small model: they show the *kind* of failure to expect and that the safeguards behave as designed, not a benchmark. A stronger model (a larger Ollama model or a hosted one) is the next experiment.
 
 ## 11.3 Still pending
 

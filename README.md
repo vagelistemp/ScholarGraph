@@ -29,8 +29,8 @@ A first run on 10,000 real, highly cited AI papers (24 MB of raw pages), with TF
 |---|---|---|---|
 | popularity of the candidate | 0.365 | 0.206 | 0.643 |
 | text cosine alone | 0.698 | 0.405 | 0.883 |
-| boosted trees, eight hand-made features | 0.703 | 0.385 | 0.908 |
-| graph neural network (mean of 3 seeds) | **0.760** | **0.458** | **0.923** |
+| boosted trees, eight hand-made features (mean of 3 seeds) | 0.700 | 0.379 | 0.906 |
+| graph neural network (mean of 3 seeds) | **0.771** | **0.471** | **0.924** |
 
 | Retrieval (300 test-period queries, leak-free graph) | MRR | Recall@20 |
 |---|---|---|
@@ -38,7 +38,7 @@ A first run on 10,000 real, highly cited AI papers (24 MB of raw pages), with TF
 | hybrid + graph bonus | **0.449** | **0.202** |
 | hybrid + lexical reranker (hurts) | 0.273 | 0.132 |
 
-On 70 questions generated from the real graph the System-1 engine answered all of them exactly with **zero model calls** (mean 11 ms); the same questions through the agent cost 2.9 model calls each. The run also exposed several problems that the unit tests had missed (an API paging rule, a leak of the future into training, a leaky retrieval benchmark); each is now fixed and tested, and described in the Implementation Guide.
+On 70 questions generated from the real graph the System-1 engine answered all of them exactly with **zero model calls** (mean 11 ms); the same questions through the agent cost 2.9 model calls each. (The handlers were written for the generator's phrasings, so this shows the zero-model path works, not how many real users' questions it would recognise.) The run also exposed several problems that the unit tests had missed (an API paging rule, a leak of the future into training, a leaky retrieval benchmark); each is now fixed and tested, and described in the Implementation Guide.
 
 ## Documentation
 
@@ -51,14 +51,14 @@ On 70 questions generated from the real graph the System-1 engine answered all o
 
 ```bash
 pip install -e ".[dl,serve,baseline]"        # Python 3.10+; add ",spark" (Java 17/21) or ",graph" (Neo4j) as needed
-python -m unittest discover -s tests -t .    # 224 tests (live Neo4j tests run only with NEO4J_URI set)
+python -m unittest discover -s tests -t .    # 226 tests (live Neo4j tests run only with NEO4J_URI set)
 python -m scholargraph demo                  # all five phases on a synthetic network, no downloads
 ```
 
 On the real data (see the Implementation Guide for details):
 
 ```bash
-export OPENALEX_API_KEY=...                  # optional free key from openalex.org/settings/api (never commit it)
+export OPENALEX_API_KEY=...                  # free key from openalex.org/settings/api-key: REQUIRED beyond 10,000 works (never commit it)
 python -m scholargraph ingest                # resumable; default slice: 300,000 most cited AI papers, 2015-2025
 python -m scholargraph lake --engine pandas  # or --engine spark (Linux / macOS / Docker)
 python -m scholargraph concepts --extractor rules
@@ -75,7 +75,7 @@ Spark on native Windows needs the Hadoop `winutils` helper; use the Docker image
 
 ## Data and privacy
 
-OpenAlex data is CC0. The downloader reads an optional API key from the environment, never writes it to disk, and never asks for or transmits an e-mail address. Downloaded data, models and run logs are git-ignored; the repository contains only code, four real API records used as a test fixture, tests and documents.
+OpenAlex data is CC0. The downloader reads your API key from the environment (without one it stops at 10,000 works), never writes it to disk, and never asks for or transmits an e-mail address. Downloaded data, models and run logs are git-ignored; the repository contains only code, four real API records used as a test fixture, tests and documents.
 
 ## Design principles
 
@@ -89,7 +89,7 @@ OpenAlex data is CC0. The downloader reads an optional API key from the environm
 
 ```
 src/scholargraph/   ingest, lake, graph, gnn, finetune, rag, agent, evalkit, api, system1, memory, mcp (+ cli, llm, structured, observability, efficiency, embeddings, schemas)
-tests/              224 tests (lake, ingest, graph, neo4j live, gnn, finetune, rag/agent, embeddings, structured output, hooks and tracing, evalkit, system1, multi-agent, memory, retrieval upgrades, mcp, efficiency and learning)
+tests/              226 tests (lake, ingest, graph, neo4j live, gnn, finetune, rag/agent, embeddings, structured output, hooks and tracing, evalkit, system1, multi-agent, memory, retrieval upgrades, mcp, efficiency and learning)
 docker/             Dockerfile.spark, neo4j.yml
 docs/               the two PDFs, figures, and the sources that build them (docs/build)
 scripts/            make_fixture.py, make_figures.py

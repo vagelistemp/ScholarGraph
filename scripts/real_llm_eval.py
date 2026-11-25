@@ -14,6 +14,8 @@ from pathlib import Path
 import pandas as pd
 
 from scholargraph.agent.agent import Agent
+from scholargraph.agent.hooks import HookManager
+from scholargraph.agent.multi import GroundingHook
 from scholargraph.agent.tools import make_tools
 from scholargraph.api.service import build_engine, build_service
 from scholargraph.config import Paths
@@ -34,7 +36,7 @@ def main() -> None:
     gold = read_gold(paths.gold)
     cpath = paths.graph / "paper_concepts.parquet"
     concepts = pd.read_parquet(cpath) if cpath.exists() else None
-    llm = MeteredLLM(OllamaLLM(a.model, timeout=240))
+    llm = MeteredLLM(OllamaLLM(a.model, timeout=45))
     svc = build_service(gold, concepts, llm)
     qs = generate_questions(svc.store, a.per_type, 0)
     print(f"{len(qs)} questions from the real graph; model {a.model}", flush=True)
@@ -42,19 +44,28 @@ def main() -> None:
             "handled_without_llm", "error_steps_per_question", "tokens_per_question")
     out = {"model": a.model, "questions": len(qs), "types": sorted({q.qtype for q in qs})}
     tools = make_tools(svc.store, svc.retriever)
-    configs = {"agent_schema_constrained": Agent(llm, tools, use_schema=True), "agent_free_form_json": Agent(llm, tools, use_schema=False),
+    hooks = HookManager()
+    GroundingHook(svc.store).register(hooks)                  # rejects a final answer whose items never appeared in a tool result
+    configs = {"agent_schema_constrained": Agent(llm, tools, use_schema=True, max_steps=4),
+               "agent_with_grounding_hook": Agent(llm, tools, use_schema=True, max_steps=4, hooks=hooks),
                "engine_system1": build_engine(svc)}
     for name, runner in configs.items():
         t0 = time.time()
-        rep = run_agent_eval(runner, qs, log=lambda *x: None)
+        rep = run_agent_eval(runner, qs, log=lambda *x: print("   ", *x, flush=True))
         out[name] = {k: rep["overall"].get(k) for k in keep}
         out[name]["wall_seconds"] = round(time.time() - t0, 1)
         out[name]["by_type_exact"] = {t: v["exact"] for t, v in rep["by_type"].items()}
         print(name, {k: (round(v, 3) if isinstance(v, float) else v) for k, v in out[name].items() if k != "by_type_exact"}, flush=True)
     # an open question through the RAG route, checked by the guardrails
     rag = []
+    svc.rag.llm = MeteredLLM(OllamaLLM(a.model, timeout=150))       # answering from five abstracts needs a longer prompt: allow more time
     for q in ("What are the main approaches to link prediction?", "Which methods are used for question answering?"):
-        r = svc.rag.answer(q)
+        try:
+            r = svc.rag.answer(q)
+        except Exception as e:
+            rag.append({"question": q, "error": f"{type(e).__name__}: {e}"[:120]})
+            print(rag[-1], flush=True)
+            continue
         rag.append({"question": q, "seconds": round(r.seconds, 1), "n_sources": len(r.sources), "answer": r.answer[:300], "guardrails_ok": r.report.ok,
                     "groundedness": round(r.report.groundedness, 3), "invalid_citations": r.report.invalid_citations, "has_citation": r.report.has_citation})
         print(rag[-1], flush=True)
